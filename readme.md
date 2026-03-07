@@ -6,6 +6,7 @@
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 ![LangGraph](https://img.shields.io/badge/LangGraph-agent--graph-purple)
+![SurrealDB](https://img.shields.io/badge/SurrealDB-3.x-ff69b4)
 
 ---
 
@@ -13,9 +14,9 @@
 
 GodEye ingests time-stamped multi-modal sensor observations (ADS-B, AIS, GPS jamming, network events, NOTAM-style documents) into SurrealDB, fuses them into higher-level events, links them to entities via a knowledge graph, and exposes a **4D replay agent** that answers "what happened in this window?" with a structured, evidence-grounded narrative.
 
-Unlike shallow RAG systems that retrieve documents and hope for the best, GodEye grounds its reasoning in a **persistent, multi-model world model**: a graph of entities, observations, and events, enriched with hybrid vector + BM25 document retrieval. The agent explicitly contrasts what it can conclude *with* the event graph versus *without* it.
+Unlike shallow RAG systems that retrieve documents and hope for the best, GodEye grounds its reasoning in a **persistent, multi-model world model**: a graph of entities, observations, and events, enriched with three distinct retrieval paths — query-driven RAG, entity-augmented Graph-RAG, and a baseline-only path for comparison. The agent explicitly contrasts what it can conclude *with* the event graph versus *without* it.
 
-Built for AI engineers, data engineers, and OSINT-curious developers who want a concrete pattern for production-shaped agent workflows over graph + vector data.
+Built for AI engineers, data engineers, and OSINT-curious developers who want a concrete, production-shaped pattern for agent workflows over graph + vector data.
 
 ---
 
@@ -40,14 +41,16 @@ Built for AI engineers, data engineers, and OSINT-curious developers who want a 
 ## Features
 
 - **Multi-model world model** — SurrealDB stores `entity`, `observation`, `event`, and `doc_chunk` tables with graph edges (`observed_in`, `involves`, `evidence`) linking them into a traversable knowledge graph.
-- **Time-windowed event fusion** — Groups observations by feed type and 10-minute buckets into typed events. Confidence is calibrated by observation count (Dempster-Shafer evidence accumulation); severity is tiered accordingly.
-- **Cross-feed correlation detection** — When ≥2 distinct feed types fire in the same 10-minute window, a `multi`-axis `correlation` event is automatically created, surfacing compound signals the LLM would otherwise have to infer itself.
-- **Hybrid BM25 + vector retrieval** — `doc_chunk` retrieval uses Reciprocal Rank Fusion (Cormack et al. 2009) over a concurrent BM25 full-text search and HNSW cosine vector search, outperforming either alone on keyword-heavy OSINT queries.
-- **High-quality embeddings** — `all-mpnet-base-v2` (768-dim, MTEB STS 69.6) runs locally with no API key required.
-- **Parallel LangGraph pipeline** — Event fusion and vector search run concurrently; narrative generation and event summarisation run concurrently. End-to-end latency is minimised without sacrificing correctness.
-- **Structured vs baseline comparison** — The agent explicitly explains what it could *not* have concluded using only RAG, demonstrating the value of the event graph.
-- **Minimal agent observability** — All agent actions are logged to an `agent_log` table in SurrealDB with timestamps and structured details.
-- **FastAPI backend + OBSIDIAN GRID frontend** — A glassmorphism dark-mode UI with bento-card layout, markdown-rendered narratives, severity-badged event table, and real-time status indicators.
+- **Time-windowed event fusion** — Groups observations by feed type and 10-minute buckets into typed events with Noisy-OR calibrated confidence (`1 - 0.8ⁿ`) and severity derived from evidence thresholds.
+- **Cross-feed correlation detection** — When ≥2 distinct feed types fire in the same 10-minute window, a `multi`-axis `correlation` event is created, surfacing compound signals the LLM would otherwise have to infer itself.
+- **Three-phase retrieval pipeline** — Query-RAG (BM25+vector on the user question), entity-augmented Graph-RAG (re-queries using names of entities detected in the event graph), and a baseline-only path for structured-vs-baseline comparison.
+- **Hybrid BM25 + vector retrieval with RRF** — `doc_chunk` retrieval merges BM25 full-text and HNSW cosine vector search via Reciprocal Rank Fusion (Cormack et al. 2009, k=30), outperforming either alone on keyword-heavy OSINT queries.
+- **Before/after window comparison** — Each replay automatically fetches the prior equal-duration window and feeds it to the LLM for escalation/de-escalation analysis.
+- **Parallel LangGraph pipeline** — Fusion + vector search concurrent (Phase 1); current + previous timelines concurrent (Phase 2); narrative + event summary LLM calls concurrent. Cold-start pool pre-warming eliminates connection overhead on first requests.
+- **Fault-isolated concurrency** — All `asyncio.gather` calls use `return_exceptions=True`; a failed BM25 index gracefully degrades to vector-only retrieval, and vice versa.
+- **Structured vs baseline comparison** — The narrative explicitly explains what the agent could *not* have concluded using only RAG, demonstrating the value of the event graph per-request.
+- **Agent observability** — All agent actions logged to `agent_log` in SurrealDB with timestamps and structured details. Non-fatal: log failures never abort business logic.
+- **FastAPI backend + glassmorphism frontend** — Dark-mode bento-card UI with markdown-rendered narratives, severity-badged expandable event table, confidence sparkbars, and copy-to-clipboard.
 
 ---
 
@@ -56,12 +59,12 @@ Built for AI engineers, data engineers, and OSINT-curious developers who want a 
 | Layer | Technology |
 |---|---|
 | Language | Python 3.11+ |
-| Database | SurrealDB 3.x (graph, vector, time-series) |
+| Database | SurrealDB 3.x (graph, vector, time-series in one engine) |
 | Agent orchestration | LangGraph |
 | LLM | Anthropic Claude (`claude-sonnet-4-6`) via LangChain |
-| Embeddings | HuggingFace `sentence-transformers/all-mpnet-base-v2` (local, no API key) |
+| Embeddings | HuggingFace `sentence-transformers/all-mpnet-base-v2` (768-dim, local) |
 | Backend | FastAPI + Uvicorn |
-| Frontend | Static HTML / CSS / JavaScript |
+| Frontend | Static HTML / CSS / JavaScript (no build step) |
 
 ---
 
@@ -81,9 +84,11 @@ flowchart LR
     R[reconstruct_node] --> N[narrate_node]
   end
 
-  subgraph R [reconstruct_node]
-    FE[fuse_events\nwrite] -.concurrent.- VS[vector_search\nBM25 + HNSW RRF]
-    FE --> GT[get_timeline\nread]
+  subgraph R [reconstruct_node — 3 phases]
+    P1A[fuse_events\nwrite] -.concurrent.- P1B[vector_search\nQuery-RAG]
+    P1A --> P2[get_timeline ×2\ncurrent + prev concurrent]
+    P1B --> P2
+    P2 --> P3[entity Graph-RAG\nre-query with entity names]
   end
 
   subgraph N [narrate_node]
@@ -99,7 +104,7 @@ flowchart LR
   SDB --- T5[agent_log]
 ```
 
-The user interacts via a web UI or the `demo.py` CLI. Both paths invoke the LangGraph agent graph, which first fuses raw observations into typed events (writing to SurrealDB), retrieves the enriched timeline, and concurrently runs hybrid document retrieval. A second node generates the narrative and event summary in parallel via two concurrent LLM calls. SurrealDB acts as the single source of truth for all graph, vector, and time-series data.
+`reconstruct_node` runs in three phases: (1) event fusion and query-RAG concurrently, (2) current and previous-window timeline reads concurrently, (3) entity-augmented Graph-RAG using entity names extracted from the detected events. `narrate_node` receives all three retrieval contexts and generates the narrative and event summary via two concurrent LLM calls. SurrealDB serves as the single source of truth for all graph, vector, and time-series data.
 
 ---
 
@@ -114,8 +119,8 @@ The user interacts via a web UI or the `demo.py` CLI. Both paths invoke the Lang
 ### 1. Clone the repository
 
 ```bash
-git clone <ADD_REPO_URL_HERE> god-eye
-cd god-eye
+git clone https://github.com/MasteraSnackin/GodEye.git
+cd GodEye
 ```
 
 ### 2. Install Python dependencies
@@ -158,7 +163,7 @@ Verify in the SurrealDB shell:
 
 ```sql
 SELECT * FROM observation LIMIT 5;
-SELECT * FROM doc_chunk LIMIT 5;
+SELECT count() FROM doc_chunk GROUP ALL;
 ```
 
 > **Note:** If you previously loaded data with an older schema (384-dim embeddings), drop the `doc_chunk` table and re-run the loader after applying the updated `schema.surql` to rebuild the 768-dim HNSW index.
@@ -179,21 +184,21 @@ Expected output:
 === GOD EYE DEMO ===
 
 Narrative (structured vs baseline):
-[LLM-generated explanation referencing fused events and RAG docs...]
+[LLM-generated explanation referencing fused events, Graph-RAG docs, and entity-linked context...]
 
 Event summary:
-[Per-cluster one-liners with axis, severity, confidence...]
+[Per-cluster one-liners with axis, severity, Noisy-OR confidence...]
 
 Events (structured graph):
 - event:abc123 | anomaly    | axis=air   | severity=medium | tags=['adsb', 'auto-fuse']
 - event:def456 | jamming    | axis=cyber | severity=high   | tags=['jamming', 'auto-fuse']
 - event:ghi789 | correlation| axis=multi | severity=high   | tags=['adsb', 'jamming', 'auto-correlate']
 
-Structured RAG docs:
-- NOTAM @ 2026-02-28T02:00:00Z: NOTAM: Airspace restrictions in the Strait...
+Structured RAG docs (query-RAG):
+- NOTAM @ 2026-02-28T02:00:00Z: Airspace restrictions in the Strait...
 
-Baseline RAG docs (no events):
-- news @ 2026-02-28T03:00:00Z: Open-source reports indicate intermittent...
+Graph-RAG docs (entity-augmented):
+- advisory @ 2026-02-28T03:00:00Z: SIRIUS STAR route advisory — GPS degradation...
 ```
 
 ### Web UI + API
@@ -216,11 +221,12 @@ Fill in the form fields:
 | Scenario | `EPIC_FURY_DEMO` |
 | Question | `What anomalies occurred near Hormuz?` |
 
-Click **Run Replay**. The UI renders:
+Click **Run Replay** (or press `Ctrl+Enter`). The UI renders:
 
-- A markdown-formatted narrative panel with AI analysis badge
-- A concise event summary
-- A sortable events table (ID, type, axis, severity, start time, source tags)
+- A markdown-formatted narrative with AI Analysis badge and copy-to-clipboard
+- A concise per-cluster event summary
+- An expandable events table (ID, type, axis, severity, confidence sparkbar, start time, tags)
+- A severity distribution bar across the event set
 
 ---
 
@@ -241,17 +247,17 @@ Click **Run Replay**. The UI renders:
 
 ### Scenarios
 
-Events are tagged with `scenario = 'EPIC_FURY_DEMO'` by default. The API and frontend both accept a `scenario` field — add new scenarios by loading fixture data tagged with a different scenario name.
+Events are tagged with `scenario = 'EPIC_FURY_DEMO'` by default. The API and frontend accept a `scenario` field — add scenarios by loading fixture data tagged with a different scenario name.
 
 ### Embedding model
 
-The HNSW index dimension (`768`) and the model name (`sentence-transformers/all-mpnet-base-v2`) must stay in sync across `schema.surql`, `src/agents/tools.py`, and `load_synthetic_world.py`. If you swap models, update all three and re-run the loader.
+The HNSW index dimension (`768`) and model name (`sentence-transformers/all-mpnet-base-v2`) must stay in sync across `schema.surql`, `src/agents/tools.py`, and `load_synthetic_world.py`. Update all three and re-run the loader if switching models.
 
 ---
 
 ## Screenshots / Demo
 
-> Replace the placeholders below with real screenshots once you have them.
+> Replace the placeholders below with real screenshots once available.
 
 **Architecture / terminal demo:**
 
@@ -295,23 +301,61 @@ Run the full LangGraph replay pipeline for a time window.
       "type": "correlation",
       "axis": "multi",
       "severity": "high",
-      "confidence": 0.8,
+      "confidence": 0.67,
       "start_time": "2026-02-28T02:10:00Z",
       "source_tags": ["adsb", "jamming", "auto-correlate"],
-      "observations": [...],
-      "entities": [...]
+      "entities": [{"id": "entity:ship1", "name": "SIRIUS STAR", "type": "ship"}]
     }
   ],
-  "event_summary": "**Correlation (multi/high):** ADS-B + jamming co-occurrence at 02:10 UTC..."
+  "event_summary": "**Correlation (multi/high, conf=0.67):** ADS-B + jamming co-occurrence at 02:10 UTC..."
 }
 ```
 
 ### `GET /api/events`
 
-Query events directly from SurrealDB without running the LLM pipeline.
+Query fused events directly without running the LLM pipeline.
 
 ```
 GET /api/events?scenario=EPIC_FURY_DEMO&from_time=2026-02-28T02:00:00Z&to_time=2026-02-28T04:00:00Z
+```
+
+### `GET /api/observations`
+
+Query raw sensor observations by time window and/or feed type.
+
+```
+GET /api/observations?from_time=2026-02-28T02:00:00Z&to_time=2026-02-28T04:00:00Z&feed_type=jamming&limit=100
+```
+
+| Parameter | Required | Description |
+|---|---|---|
+| `from_time` | No | ISO 8601 start (inclusive) |
+| `to_time` | No | ISO 8601 end (exclusive) |
+| `feed_type` | No | Filter: `adsb` \| `ais` \| `jamming` \| `net` \| `sat_pass` |
+| `limit` | No | Max results (default 100, max 1000) |
+
+### `GET /api/entities`
+
+Query all entities in the knowledge graph.
+
+```
+GET /api/entities?entity_type=ship
+```
+
+### `GET /api/scenarios`
+
+List all distinct scenario names present in the database.
+
+```
+GET /api/scenarios
+```
+
+### `GET /api/jamming/tankers`
+
+High-severity jamming events where at least one involved entity is a ship. Walks the graph via `involves→entity` edges.
+
+```
+GET /api/jamming/tankers?from_time=2026-02-28T02:00:00Z&to_time=2026-02-28T04:00:00Z&scenario=EPIC_FURY_DEMO
 ```
 
 ### `GET /health`
@@ -322,7 +366,7 @@ Returns `{"status": "ok", "db": "connected"}` if SurrealDB is reachable, or HTTP
 
 ## Tests
 
-No automated test suite is included in this release. To manually sanity-check the system:
+No automated test suite is included in this release. To manually verify the system:
 
 ```sql
 -- In the SurrealDB shell
@@ -331,25 +375,25 @@ SELECT * FROM agent_log ORDER BY time DESC LIMIT 10;
 SELECT count() FROM doc_chunk GROUP ALL;
 ```
 
-To run the end-to-end pipeline:
+End-to-end pipeline check:
 
 ```bash
 python demo.py
 ```
 
-**Planned:** unit tests for fusion logic and a LangGraph integration test against an in-memory SurrealDB instance using `pytest`. Contributions welcome.
+**Planned:** `pytest` unit tests for the fusion logic and confidence scoring, plus a LangGraph integration test against an in-memory SurrealDB instance. Contributions welcome.
 
 ---
 
 ## Roadmap
 
-- Add real data sources (live ADS-B via dump1090, AIS via AISHub, OSINT feeds) with a configurable ingestion pipeline.
-- Implement proper spatiotemporal clustering for events (DBSCAN on position + time) beyond simple time bucketing.
-- Graph-RAG: retrieve `doc_chunk` records by entity/event graph neighbourhood rather than embedding proximity alone.
-- Density-based anomaly scoring with Isolation Forest against a rolling baseline observation rate.
-- 3D globe or map visualisation (globe.gl / MapLibre) rendered over the events JSON.
-- Agent metrics dashboard: per-request latency breakdown, event counts, confidence distributions.
-- Local LLM / embeddings option for offline or cost-sensitive deployments.
+- **DBSCAN spatiotemporal clustering** — replace hard 10-minute fixed windows with density-based grouping over `(lat, lon, time)`, eliminating split-at-boundary artefacts.
+- **Real data sources** — live ADS-B via dump1090, AIS via AISHub, configurable OSINT feed ingestion pipeline.
+- **Streaming fusion** — SurrealDB LIVE SELECT for real-time event creation as observations land, rather than batch replay.
+- **Isolation Forest anomaly scoring** — per-observation anomaly scores against a rolling baseline rate, replacing binary time-bucket presence.
+- **3D globe / map visualisation** — globe.gl or MapLibre rendered over the events JSON from `/api/events`.
+- **Agent metrics dashboard** — per-request latency breakdown, event counts, confidence distributions, Graph-RAG uplift measurement.
+- **Local LLM option** — offline or cost-sensitive deployments via Ollama or llama.cpp.
 
 ---
 
@@ -357,11 +401,9 @@ python demo.py
 
 Contributions are welcome.
 
-- Open a GitHub Issue for bugs, feature requests, or questions.
-- For pull requests: fork the repo, create a focused feature branch, keep changes scoped, and include a brief description of what you changed and why.
-- Follow existing code style: async Python, typed where practical, errors logged not swallowed.
-
-`<ADD_CONTRIBUTING_LINK_OR_GUIDELINES_HERE>`
+- Open a [GitHub Issue](https://github.com/MasteraSnackin/GodEye/issues) for bugs, feature requests, or questions.
+- For pull requests: fork the repo, create a focused feature branch, keep changes scoped, and include a brief description of what changed and why.
+- Follow existing code style: async Python, typed where practical, errors logged not swallowed, `return_exceptions=True` on all `asyncio.gather` calls.
 
 ---
 
@@ -373,9 +415,10 @@ This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) f
 
 ## Contact / Support
 
+- **GitHub:** [MasteraSnackin](https://github.com/MasteraSnackin)
+- **Repository:** [github.com/MasteraSnackin/GodEye](https://github.com/MasteraSnackin/GodEye)
 - **Maintainer:** `<ADD_MAINTAINER_NAME_HERE>`
-- **GitHub:** `<ADD_GITHUB_PROFILE_OR_ORG_HERE>`
-- **Website:** `<ADD_WEBSITE_OR_BLOG_URL_HERE>`
 - **Email:** `<ADD_CONTACT_EMAIL_HERE>`
+- **Website:** `<ADD_WEBSITE_OR_BLOG_URL_HERE>`
 
-For bugs and feature requests, please open a [GitHub Issue](<ADD_REPO_URL_HERE>/issues).
+For bugs and feature requests, please open a [GitHub Issue](https://github.com/MasteraSnackin/GodEye/issues).
