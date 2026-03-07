@@ -3,6 +3,7 @@ from typing import Optional, TypedDict, List
 
 class State(TypedDict, total=False):
     mode: str
+    thread_id: Optional[str]
     query: Optional[str]
     from_time: Optional[str]
     to_time: Optional[str]
@@ -14,5 +15,6 @@ class State(TypedDict, total=False):
     context_docs: Optional[List[dict]]
     baseline_docs: Optional[List[dict]]
     entity_docs: Optional[List[dict]]
+    event_annotations: Optional[List[dict]]
     event_summary: Optional[str]
     narrative: Optional[str]

@@ -3,6 +3,7 @@
 **4D OSINT Replay Engine — time-resolved, multi-modal intelligence over a unified graph + vector world model.**
 
 ![Build](https://img.shields.io/badge/build-passing-brightgreen)
+![CI](https://img.shields.io/github/actions/workflow/status/MasteraSnackin/GodEye/ci.yml?branch=master&label=CI)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 ![LangGraph](https://img.shields.io/badge/LangGraph-agent--graph-purple)
@@ -50,6 +51,7 @@ Built for AI engineers, data engineers, and OSINT-curious developers who want a 
 - **Fault-isolated concurrency** — All `asyncio.gather` calls use `return_exceptions=True`; a failed BM25 index gracefully degrades to vector-only retrieval, and vice versa.
 - **Structured vs baseline comparison** — The narrative explicitly explains what the agent could *not* have concluded using only RAG, demonstrating the value of the event graph per-request.
 - **Agent observability** — All agent actions logged to `agent_log` in SurrealDB with timestamps and structured details. Non-fatal: log failures never abort business logic.
+- **Persistent agent memory** — Checkpoints are persisted to SurrealDB (`agent_checkpoint`) via a custom `SurrealDBCheckpointSaver` so replay sessions can resume across process restarts.
 - **FastAPI backend + glassmorphism frontend** — Dark-mode bento-card UI with markdown-rendered narratives, severity-badged expandable event table, confidence sparkbars, and copy-to-clipboard.
 
 ---
@@ -238,6 +240,11 @@ Click **Run Replay** (or press `Ctrl+Enter`). The UI renders:
 |---|---|---|---|
 | `ANTHROPIC_API_KEY` | Yes | — | Anthropic API key for Claude LLM calls |
 | `SURREAL_URL` | No | `ws://127.0.0.1:8000/rpc` | SurrealDB WebSocket RPC endpoint |
+| `SURREAL_USER` | No | `root` | SurrealDB username |
+| `SURREAL_PASSWORD` | No | `root` | SurrealDB password |
+| `CORS_ORIGINS` | No | `http://localhost:8001,http://127.0.0.1:8001` | Comma-separated allowed origins for browser clients |
+| `GODEYE_API_KEYS` | No | (unset) | Comma-separated API keys for optional API authentication (`X-API-Key`). Leave unset to disable auth in local mode |
+| `GODEYE_CHECKPOINT_LIMIT` | No | (unset) | Optional checkpoint retention policy per `thread_id` and namespace. `unset` = unlimited, `0` = keep none, positive integer keeps the most recent N checkpoints |
 
 ### Database
 
@@ -358,20 +365,63 @@ High-severity jamming events where at least one involved entity is a ship. Walks
 GET /api/jamming/tankers?from_time=2026-02-28T02:00:00Z&to_time=2026-02-28T04:00:00Z&scenario=EPIC_FURY_DEMO
 ```
 
+### `GET /api/checkpoints`
+
+Inspect persisted LangGraph checkpoint history for a replay thread.
+
+```
+GET /api/checkpoints?thread_id=<thread_id>&checkpoint_ns=replay&limit=20
+```
+
+**Response**
+
+```json
+{
+  "thread_id": "f2a9a3...",
+  "checkpoint_ns": "replay",
+  "checkpoints": [
+    {
+      "checkpoint_id": "cp-1a2b",
+      "parent_checkpoint_id": null,
+      "metadata": {"source": "replay"}
+    }
+  ]
+}
+```
+
 ### `GET /health`
 
-Returns `{"status": "ok", "db": "connected"}` if SurrealDB is reachable, or HTTP 503 if not.
+Returns:
+- `{"status":"ok","db":"connected","llm":"configured"}` if SurrealDB and `ANTHROPIC_API_KEY` are available.
+- `{"status":"degraded","db":"connected","llm":"missing_api_key"}` if SurrealDB is reachable but LLM key is not set.
+- HTTP 503 if SurrealDB is unreachable.
 
 ---
 
 ## Tests
 
-No automated test suite is included in this release. To manually verify the system:
+Automated tests are included:
+
+- `pytest` (`tests/test_tools_scoring.py`)
+- `pytest` (`tests/test_graph_windowing.py`)
+- `pytest` (`tests/test_api_validation.py`)
+- `pytest` (`tests/test_tools_annotations.py`)
+- `pytest` (`tests/test_api_endpoints.py`)
+- `pytest` (`tests/test_checkpointer.py`)
+
+To run the suite:
+
+```bash
+pytest -q
+```
+
+Manual verification still useful:
 
 ```sql
 -- In the SurrealDB shell
 SELECT * FROM event LIMIT 10;
 SELECT * FROM agent_log ORDER BY time DESC LIMIT 10;
+SELECT * FROM agent_checkpoint ORDER BY created_at DESC LIMIT 10;
 SELECT count() FROM doc_chunk GROUP ALL;
 ```
 
@@ -380,6 +430,12 @@ End-to-end pipeline check:
 ```bash
 python demo.py
 ```
+
+### Continuous Integration
+
+The repository includes a GitHub Actions workflow at `.github/workflows/ci.yml` that runs on every push and pull request:
+- `py_compile` checks for core modules and tests
+- `pytest -q` executes the full test suite
 
 **Planned:** `pytest` unit tests for the fusion logic and confidence scoring, plus a LangGraph integration test against an in-memory SurrealDB instance. Contributions welcome.
 
@@ -397,21 +453,15 @@ python demo.py
 
 ---
 
-## Open-source LangChain Integration
+## Persistent Checkpointing
 
-The retrieval and checkpointing components have been extracted as a standalone, reusable package:
+`src/agents/checkpointer.py` implements `SurrealDBCheckpointSaver`, a custom
+LangGraph `BaseCheckpointSaver` that writes state checkpoints into SurrealDB.
+This enables:
 
-**[langchain-surrealdb](https://github.com/MasteraSnackin/langchain-surrealdb)** — LangChain + LangGraph integrations for SurrealDB.
-
-| Component | Description |
-|---|---|
-| `SurrealDBRetriever` | `BaseRetriever` — hybrid BM25 + HNSW vector search with RRF |
-| `SurrealDBChatMessageHistory` | `BaseChatMessageHistory` — persistent per-session chat history |
-| `SurrealDBSaver` | `BaseCheckpointSaver` — replaces `MemorySaver` with durable, multi-process LangGraph state |
-
-```bash
-pip install langchain-surrealdb
-```
+- Stateful multi-step replay continuation by `thread_id` across process restarts.
+- Structured, queryable checkpoint history for auditing and replay failure analysis.
+- Checkpoint pruning and per-thread deletion helpers for operational cleanup.
 
 ---
 

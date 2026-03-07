@@ -7,3 +7,4 @@ sentence-transformers>=3.0.0
 python-dotenv>=1.0.0
 fastapi>=0.100.0
 uvicorn>=0.20.0
+pytest>=8.0.0

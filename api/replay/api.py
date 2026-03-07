@@ -1,5 +1,6 @@
 import hashlib
 import logging
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional
@@ -7,15 +8,37 @@ from typing import Optional
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
 
 logger = logging.getLogger(__name__)
 
-from src.agents.graph import build_graph
+from src.agents.checkpointer import SurrealDBCheckpointSaver
+from src.agents.graph import build_graph, is_llm_configured
 from src.agents.state import State
 from src.agents.tools import get_surreal_client, get_high_sev_jamming_on_tankers
+
+
+def _parse_csv_env(name: str, default: str) -> list[str]:
+    raw = os.getenv(name, default)
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+ALLOW_ORIGINS = _parse_csv_env("CORS_ORIGINS", "http://localhost:8001, http://127.0.0.1:8001")
+API_KEYS = set(_parse_csv_env("GODEYE_API_KEYS", os.getenv("API_KEYS", "")))
+
+
+def validate_runtime_config():
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        raise RuntimeError("ANTHROPIC_API_KEY is required for replay endpoints.")
+
+
+def require_api_key(x_api_key: Optional[str] = Header(default=None, alias="X-API-Key")):
+    if not API_KEYS:
+        return
+    if not x_api_key or x_api_key not in API_KEYS:
+        raise HTTPException(status_code=401, detail="Missing or invalid API key.")
 
 
 @asynccontextmanager
@@ -38,12 +61,13 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title="GodEye API", version="2.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOW_ORIGINS,
     allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "X-API-Key"],
 )
 
 try:
+    validate_runtime_config()
     graph = build_graph()
 except Exception as _e:
     logger.exception("Graph failed to initialize at startup: %s", _e)
@@ -74,7 +98,9 @@ async def health():
         db = await get_surreal_client()
         await db.query("RETURN 1;")
         await db.close()
-        return {"status": "ok", "db": "connected"}
+        if not is_llm_configured():
+            return {"status": "degraded", "db": "connected", "llm": "missing_api_key"}
+        return {"status": "ok", "db": "connected", "llm": "configured"}
     except Exception as e:
         logger.exception("Health check failed: %s", e)
         raise HTTPException(status_code=503, detail="DB unavailable. Check server logs.")
@@ -82,6 +108,7 @@ async def health():
 
 @app.get("/api/events")
 async def api_events(
+    _auth: Optional[str] = Depends(require_api_key),
     scenario: str = Query(default="EPIC_FURY_DEMO"),
     from_time: Optional[str] = Query(default=None),
     to_time: Optional[str] = Query(default=None),
@@ -118,8 +145,38 @@ async def api_events(
         await db.close()
 
 
+@app.get("/api/checkpoints")
+async def api_checkpoints(
+    _auth: Optional[str] = Depends(require_api_key),
+    thread_id: str = Query(..., description="Replay thread ID"),
+    checkpoint_ns: str = Query(default=""),
+    limit: int = Query(default=20, le=200),
+):
+    """Inspect persisted checkpoint history for a replay thread."""
+    saver = SurrealDBCheckpointSaver()
+    try:
+        checkpoints = []
+        async for cp in saver.alist(
+            {"configurable": {"thread_id": thread_id, "checkpoint_ns": checkpoint_ns}},
+            limit=limit,
+        ):
+            checkpoints.append(
+                {
+                    "checkpoint_id": cp.config["configurable"]["checkpoint_id"],
+                    "parent_checkpoint_id": cp.parent_config["configurable"]["checkpoint_id"]
+                    if cp.parent_config
+                    else None,
+                    "metadata": cp.metadata,
+                }
+            )
+        return {"thread_id": thread_id, "checkpoint_ns": checkpoint_ns, "checkpoints": checkpoints}
+    except Exception as e:
+        logger.exception("api_checkpoints failed: %s", e)
+        raise HTTPException(status_code=500, detail="Checkpoint lookup failed. Check server logs.")
+
+
 @app.get("/api/scenarios")
-async def api_scenarios():
+async def api_scenarios(_auth: Optional[str] = Depends(require_api_key)):
     """Return all distinct scenario names present in the database."""
     db = await get_surreal_client()
     try:
@@ -136,6 +193,7 @@ async def api_scenarios():
 
 @app.get("/api/jamming/tankers")
 async def api_jamming_tankers(
+    _auth: Optional[str] = Depends(require_api_key),
     from_time: str = Query(..., description="ISO 8601 start (inclusive)"),
     to_time: str = Query(..., description="ISO 8601 end (exclusive)"),
     scenario: str = Query(default="EPIC_FURY_DEMO"),
@@ -158,6 +216,7 @@ async def api_jamming_tankers(
 
 @app.get("/api/observations")
 async def api_observations(
+    _auth: Optional[str] = Depends(require_api_key),
     from_time: Optional[str] = Query(default=None, description="ISO 8601 start (inclusive)"),
     to_time: Optional[str] = Query(default=None, description="ISO 8601 end (exclusive)"),
     feed_type: Optional[str] = Query(default=None, description="Filter by feed type: adsb | ais | jamming | net | sat_pass"),
@@ -198,6 +257,7 @@ async def api_observations(
 
 @app.get("/api/entities")
 async def api_entities(
+    _auth: Optional[str] = Depends(require_api_key),
     entity_type: Optional[str] = Query(default=None, description="Filter by entity type: ship | aircraft | station"),
 ):
     """All entities in the knowledge graph, optionally filtered by type."""
@@ -219,18 +279,19 @@ async def api_entities(
 
 
 @app.post("/api/replay")
-async def api_replay(req: ReplayRequest):
+async def api_replay(req: ReplayRequest, _auth: Optional[str] = Depends(require_api_key)):
     if graph is None:
         raise HTTPException(status_code=503, detail="Graph not initialized. Check server logs.")
     state: State = {
         "mode": req.mode,
+        "thread_id": hashlib.md5(f"{req.scenario}:{req.from_time}:{req.to_time}".encode()).hexdigest(),
         "from_time": req.from_time,
         "to_time": req.to_time,
         "region": req.region,
         "scenario": req.scenario,
         "query": req.query,
     }
-    thread_id = hashlib.md5(f"{req.scenario}:{req.from_time}:{req.to_time}".encode()).hexdigest()
+    thread_id = state["thread_id"]
     try:
         result = await graph.ainvoke(state, config={"configurable": {"thread_id": thread_id}})
     except Exception as e:

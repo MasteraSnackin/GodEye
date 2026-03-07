@@ -1,5 +1,6 @@
 // ── Config ──────────────────────────────────────────────────────
 const API_BASE = "http://localhost:8001";
+const API_KEY = localStorage.getItem("GODEYE_API_KEY") || "";
 
 // Module-level event store so the delegated row-expand handler can access raw data.
 let lastEvents = [];
@@ -168,9 +169,13 @@ async function runReplay() {
   controller = new AbortController();
 
   try {
+    const headers = { "Content-Type": "application/json" };
+    if (API_KEY) {
+      headers["X-API-Key"] = API_KEY;
+    }
     const res = await fetch(`${API_BASE}/api/replay`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify({ mode: "replay", from_time: fromTime, to_time: toTime, region, scenario, query }),
       signal: controller.signal,
     });
@@ -329,7 +334,7 @@ document.getElementById("eventsBody").addEventListener("click", e => {
 
   row.classList.add("expanded");
 
-  const regionStr = ev.region ? JSON.stringify(ev.region) : "—";
+  const regionStr = ev.region ?? (ev.details?.region ?? ev.details?.region_name ?? "—");
   const detailsStr = ev.details && Object.keys(ev.details).length
     ? JSON.stringify(ev.details, null, 0)
     : "—";

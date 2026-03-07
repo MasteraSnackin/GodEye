@@ -66,6 +66,14 @@ DEFINE TABLE evidence SCHEMAFULL PERMISSIONS FULL;
 
 DEFINE FIELD weight      ON TABLE evidence TYPE option<float>;
 
+-- Analyst or agent-generated event annotations for persistent review context.
+DEFINE TABLE event_annotation SCHEMAFULL PERMISSIONS FULL;
+
+DEFINE FIELD event_id    ON TABLE event_annotation TYPE string;
+DEFINE FIELD reason      ON TABLE event_annotation TYPE string;
+DEFINE FIELD flagged_by  ON TABLE event_annotation TYPE string;
+DEFINE FIELD flagged_at  ON TABLE event_annotation TYPE datetime;
+
 
 -- === Agent log ===
 
@@ -75,3 +83,17 @@ DEFINE FIELD time         ON TABLE agent_log TYPE datetime;
 DEFINE FIELD agent        ON TABLE agent_log TYPE string;
 DEFINE FIELD action       ON TABLE agent_log TYPE string;
 DEFINE FIELD details      ON TABLE agent_log TYPE option<object>;
+
+-- === Checkpoints for LangGraph stateful execution ===
+
+DEFINE TABLE agent_checkpoint SCHEMAFULL PERMISSIONS FULL;
+
+DEFINE FIELD thread_id            ON TABLE agent_checkpoint TYPE string;
+DEFINE FIELD checkpoint_ns        ON TABLE agent_checkpoint TYPE option<string>;
+DEFINE FIELD checkpoint_id        ON TABLE agent_checkpoint TYPE string;
+DEFINE FIELD parent_checkpoint_id ON TABLE agent_checkpoint TYPE option<string>;
+DEFINE FIELD created_at           ON TABLE agent_checkpoint TYPE datetime;
+DEFINE FIELD checkpoint           ON TABLE agent_checkpoint TYPE object;
+DEFINE FIELD metadata             ON TABLE agent_checkpoint TYPE option<object>;
+DEFINE FIELD versions             ON TABLE agent_checkpoint TYPE option<object>;
+DEFINE FIELD writes               ON TABLE agent_checkpoint TYPE option<array>;

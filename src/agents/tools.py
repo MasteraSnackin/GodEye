@@ -12,13 +12,36 @@ from langchain_core.tools import tool
 logger = logging.getLogger(__name__)
 
 SURREAL_URL = os.getenv("SURREAL_URL", "ws://127.0.0.1:8000/rpc")
+SURREAL_USER = os.getenv("SURREAL_USER", "root")
+SURREAL_PASSWORD = os.getenv("SURREAL_PASSWORD", "root")
 NS = "god_eye"
 DB = "world"
+DB_QUERY_TIMEOUT_SECONDS = 8.0
 
 # all-mpnet-base-v2: 768-dim, MTEB STS 69.6 vs all-MiniLM-L6-v2's 63.3 (~10% better retrieval).
 # Lazy-loaded on first vector_search call — avoids 2-5s startup delay and 420MB RAM if unused.
 _embeddings: HuggingFaceEmbeddings | None = None
 _embeddings_lock = threading.Lock()
+
+
+def compute_noisy_or_confidence(obs_count: int) -> float:
+    """Return diminishing evidence-weight confidence for a count of observations."""
+    if obs_count <= 0:
+        return 0.0
+    return round(1.0 - 0.8 ** obs_count, 2)
+
+
+def derive_event_severity(confidence: float, feed_type: str | None = None) -> str:
+    """Translate evidence confidence into a coarse severity bucket."""
+    if feed_type == "jamming" or confidence >= 0.67:
+        return "high"
+    if confidence >= 0.36:
+        return "medium"
+    return "low"
+
+
+async def _query_with_timeout(db: AsyncSurreal, query: str, params: dict, timeout: float = DB_QUERY_TIMEOUT_SECONDS):
+    return await asyncio.wait_for(db.query(query, params), timeout=timeout)
 
 
 def _get_embeddings() -> HuggingFaceEmbeddings:
@@ -63,9 +86,9 @@ async def _create_conn() -> AsyncSurreal:
     for attempt in range(3):
         try:
             db = AsyncSurreal(SURREAL_URL)
-            await db.connect()
-            await db.signin({"username": "root", "password": "root"})
-            await db.use(NS, DB)
+            await asyncio.wait_for(db.connect(), timeout=5.0)
+            await asyncio.wait_for(db.signin({"username": SURREAL_USER, "password": SURREAL_PASSWORD}), timeout=5.0)
+            await asyncio.wait_for(db.use(NS, DB), timeout=5.0)
             return db
         except Exception as e:
             last_err = e
@@ -87,7 +110,8 @@ async def get_surreal_client() -> _PooledConn:
 async def log_agent_action(db: AsyncSurreal, agent: str, action: str, details: dict | None = None):
     # Non-fatal: observability writes must never abort business logic.
     try:
-        await db.query(
+        await _query_with_timeout(
+            db,
             """
             CREATE agent_log CONTENT {
                 time: time::now(),
@@ -118,7 +142,8 @@ async def fuse_events(from_time: str, to_time: str, region: Optional[str] = None
         )
 
         # Delete any existing events for this window so fusion is idempotent
-        await db.query(
+        await _query_with_timeout(
+            db,
             """
             DELETE event
             WHERE start_time >= <datetime>$from
@@ -128,7 +153,8 @@ async def fuse_events(from_time: str, to_time: str, region: Optional[str] = None
             {"from": from_time, "to": to_time, "scenario": scenario},
         )
 
-        res = await db.query(
+        res = await _query_with_timeout(
+            db,
             """
             LET $rows = SELECT
                 feed_type,
@@ -160,29 +186,13 @@ async def fuse_events(from_time: str, to_time: str, region: Optional[str] = None
             )
             etype = "jamming" if feed_type == "jamming" else "anomaly"
 
-            # Noisy-OR / Independent Evidence Accumulation (Pearl 1988):
-            # confidence = 1 - (1 - b)^n, where b = 0.2 (belief per observation).
-            # Benchmark vs. old linear min(1.0, n/5.0):
-            #   n=1: 0.20 (same)  n=2: 0.36 (was 0.40)  n=3: 0.49 (was 0.60)
-            #   n=5: 0.67 (was 1.00 — linear was overconfident, claiming certainty)
-            #   n=10: 0.89        n=20: 0.99
-            # Evidence has diminishing marginal returns on certainty; Noisy-OR reflects this.
-            obs_count  = len(obs_ids)
-            confidence = round(1.0 - 0.8 ** obs_count, 2)
-
-            # Severity derived from calibrated confidence, not raw count.
-            # Thresholds match the Noisy-OR boundary points for 5-obs (≥0.67) and 2-obs (≥0.36),
-            # preserving backward-compatible qualitative behaviour while making derivation principled.
-            # Jamming is always high regardless of evidence weight.
-            if feed_type == "jamming" or confidence >= 0.67:
-                severity = "high"
-            elif confidence >= 0.36:
-                severity = "medium"
-            else:
-                severity = "low"
+            obs_count = len(obs_ids)
+            confidence = compute_noisy_or_confidence(obs_count)
+            severity = derive_event_severity(confidence=confidence, feed_type=feed_type)
 
             try:
-                ev_res = await db.query(
+                ev_res = await _query_with_timeout(
+                    db,
                     """
                     CREATE event CONTENT {
                         type: $etype,
@@ -193,6 +203,7 @@ async def fuse_events(from_time: str, to_time: str, region: Optional[str] = None
                         scenario: $scenario,
                         axis: $axis,
                         severity: $severity,
+                        region: $region,
                         details: $details
                     };
                     """,
@@ -205,7 +216,8 @@ async def fuse_events(from_time: str, to_time: str, region: Optional[str] = None
                         "severity": severity,
                         "confidence": confidence,
                         "scenario": scenario,
-                        "details": {"region_name": region} if region else None,
+                        "region": region,
+                        "details": {"region_name": region, "region": region} if region else None,
                     },
                 )
                 ev = ev_res[0]["result"][0]
@@ -218,7 +230,8 @@ async def fuse_events(from_time: str, to_time: str, region: Optional[str] = None
             # Link observations as evidence — batch all in one query
             if obs_ids:
                 try:
-                    await db.query(
+                    await _query_with_timeout(
+                        db,
                         "FOR $o IN $obs_ids { RELATE $ev->evidence->$o SET weight = 1.0; };",
                         {"ev": ev["id"], "obs_ids": obs_ids},
                     )
@@ -227,7 +240,8 @@ async def fuse_events(from_time: str, to_time: str, region: Optional[str] = None
 
             # Link nearby entities as 'involves'
             try:
-                ent_res = await db.query(
+                ent_res = await _query_with_timeout(
+                    db,
                     """
                     SELECT DISTINCT <-observed_in<-entity AS ents
                     FROM $obs_ids;
@@ -244,7 +258,8 @@ async def fuse_events(from_time: str, to_time: str, region: Optional[str] = None
                 ent_ids = [e["id"] for e in ents if isinstance(e, dict) and e.get("id")]
                 if ent_ids:
                     try:
-                        await db.query(
+                        await _query_with_timeout(
+                            db,
                             "FOR $e IN $ents_list { RELATE $ev->involves->$e SET role = 'asset'; };",
                             {"ev": ev["id"], "ents_list": ent_ids},
                         )
@@ -266,10 +281,11 @@ async def fuse_events(from_time: str, to_time: str, region: Optional[str] = None
             feed_types    = sorted({g["feed_type"] for g in bucket_groups})
             all_obs_ids   = [oid for g in bucket_groups for oid in g["obs_ids"]]
             obs_count     = len(all_obs_ids)
-            corr_conf     = round(1.0 - 0.8 ** obs_count, 2)  # Noisy-OR, consistent with per-feed confidence
+            corr_conf = compute_noisy_or_confidence(obs_count)  # Noisy-OR, consistent with per-feed confidence
 
             try:
-                corr_res = await db.query(
+                corr_res = await _query_with_timeout(
+                    db,
                     """
                     CREATE event CONTENT {
                         type: 'correlation',
@@ -279,7 +295,9 @@ async def fuse_events(from_time: str, to_time: str, region: Optional[str] = None
                         source_tags: $source_tags,
                         scenario: $scenario,
                         axis: 'multi',
-                        severity: 'high'
+                        severity: 'high',
+                        region: $region,
+                        details: $details
                     };
                     """,
                     {
@@ -288,6 +306,8 @@ async def fuse_events(from_time: str, to_time: str, region: Optional[str] = None
                         "confidence": corr_conf,
                         "source_tags": feed_types + ["auto-correlate"],
                         "scenario": scenario,
+                        "region": region,
+                        "details": {"region_name": region, "region": region} if region else None,
                     },
                 )
                 corr_ev = corr_res[0]["result"][0]
@@ -299,7 +319,8 @@ async def fuse_events(from_time: str, to_time: str, region: Optional[str] = None
 
             if all_obs_ids:
                 try:
-                    await db.query(
+                    await _query_with_timeout(
+                        db,
                         "FOR $o IN $obs_ids { RELATE $ev->evidence->$o SET weight = 1.0; };",
                         {"ev": corr_ev["id"], "obs_ids": all_obs_ids},
                     )
@@ -329,7 +350,8 @@ async def get_timeline(from_time: str, to_time: str, scenario: Optional[str] = N
     """
     db = await get_surreal_client()
     try:
-        res = await db.query(
+        res = await _query_with_timeout(
+            db,
             """
             SELECT
                 *,
@@ -357,7 +379,8 @@ async def get_high_sev_jamming_on_tankers(from_time: str, to_time: str, scenario
     """
     db = await get_surreal_client()
     try:
-        res = await db.query(
+        res = await _query_with_timeout(
+            db,
             """
             SELECT
               e.id,
@@ -414,11 +437,13 @@ async def vector_search(query: str, k: int = 3) -> list:
         # BM25 and vector queries are independent — run concurrently.
         # return_exceptions=True: a failed BM25 index still allows vector results through (and vice versa).
         bm25_res, vec_res = await asyncio.gather(
-            db.query(
+            _query_with_timeout(
+                db,
                 "SELECT id, text, source, time FROM doc_chunk WHERE text @@ $query LIMIT $fetch_k;",
                 {"query": query, "fetch_k": fetch_k},
             ),
-            db.query(
+            _query_with_timeout(
+                db,
                 f"SELECT id, text, source, time FROM doc_chunk WHERE embedding <|{fetch_k},COSINE|> $vec;",
                 {"vec": query_vec},
             ),
@@ -459,6 +484,75 @@ async def vector_search(query: str, k: int = 3) -> list:
         ]
     except Exception as e:
         logger.exception("vector_search failed: %s", e)
+        return []
+    finally:
+        await db.close()
+
+
+@tool("flag_suspicious_event", return_direct=False)
+async def flag_suspicious_event(event_id: str, reason: str, flagged_by: str = "agent") -> dict:
+    """
+    Persist a review annotation for a replay event. This allows operator input or
+    automated passes to be preserved as structured graph state.
+    """
+    db = await get_surreal_client()
+    try:
+        existing = await _query_with_timeout(
+            db,
+            """
+            SELECT id FROM event_annotation
+            WHERE event_id = $event_id
+              AND reason = $reason
+            LIMIT 1;
+            """,
+            {"event_id": event_id, "reason": reason},
+        )
+        if existing and existing[0].get("result"):
+            return {"status": "already_flagged", "event_id": event_id, "reason": reason}
+
+        await _query_with_timeout(
+            db,
+            """
+            CREATE event_annotation CONTENT {
+                event_id: $event_id,
+                reason: $reason,
+                flagged_by: $flagged_by,
+                flagged_at: time::now()
+            };
+            """,
+            {"event_id": event_id, "reason": reason, "flagged_by": flagged_by},
+        )
+        return {"status": "flagged", "event_id": event_id, "reason": reason}
+    except Exception as e:
+        logger.warning("flag_suspicious_event failed for %s: %s", event_id, e)
+        return {"status": "error", "event_id": event_id, "error": str(e)}
+    finally:
+        await db.close()
+
+
+@tool("get_event_annotations", return_direct=False)
+async def get_event_annotations(event_ids: List[str]) -> list:
+    """
+    Return structured annotations for a set of event IDs (manual flags, analyst notes).
+    """
+    if not event_ids:
+        return []
+
+    db = await get_surreal_client()
+    try:
+        res = await _query_with_timeout(
+            db,
+            """
+            SELECT event_id, reason, flagged_by, flagged_at
+            FROM event_annotation
+            WHERE event_id IN $event_ids
+            ORDER BY flagged_at DESC;
+            """,
+            {"event_ids": event_ids},
+        )
+        return res[0].get("result", []) if res else []
+    except Exception as e:
+        logger.warning("get_event_annotations failed: %s", e)
         return []
     finally:
         await db.close()
