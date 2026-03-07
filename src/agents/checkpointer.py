@@ -15,6 +15,20 @@ from langgraph.checkpoint.base import (
 from .tools import get_surreal_client
 
 
+def _coerce_query_rows(result: object) -> list[dict]:
+    if result is None:
+        return []
+    if isinstance(result, list):
+        if len(result) == 1 and isinstance(result[0], dict) and "result" in result[0]:
+            payload = result[0].get("result", [])
+            return payload if isinstance(payload, list) else ([payload] if payload else [])
+        return [row for row in result if row is not None and isinstance(row, dict)]
+    if isinstance(result, dict) and "result" in result:
+        payload = result.get("result", [])
+        return payload if isinstance(payload, list) else ([payload] if payload else [])
+    return []
+
+
 class SurrealDBCheckpointSaver(BaseCheckpointSaver):
     """Persist LangGraph checkpoints in SurrealDB for resumable multi-step workflows."""
 
@@ -57,18 +71,57 @@ class SurrealDBCheckpointSaver(BaseCheckpointSaver):
         db = await get_surreal_client()
         try:
             result = await asyncio.wait_for(db.query(query, params), timeout=self.timeout_seconds)
-            if not result:
-                return []
-            return result[0].get("result", [])
+            return _coerce_query_rows(result)
         finally:
             await db.close()
 
     async def _store_checkpoint(self, payload: dict[str, Any]) -> None:
+        thread_id = payload["thread_id"]
+        checkpoint_ns = payload["checkpoint_ns"]
+        checkpoint_id = payload["checkpoint_id"]
+        created_at = payload["created_at"]
+        parent_checkpoint_id = payload["parent_checkpoint_id"]
+        checkpoint = payload["checkpoint"]
+        metadata = payload["metadata"]
+        versions = payload["versions"]
+        writes = payload.get("writes", [])
+
         await self._query(
             """
-            INSERT INTO agent_checkpoint CONTENT $payload;
+            INSERT INTO agent_checkpoint (
+                thread_id,
+                checkpoint_ns,
+                checkpoint_id,
+                parent_checkpoint_id,
+                created_at,
+                checkpoint,
+                metadata,
+                versions,
+                writes
+            ) VALUES (
+                $thread_id,
+                $checkpoint_ns,
+                $checkpoint_id,
+                $parent_checkpoint_id,
+                $created_at,
+                $checkpoint,
+                $metadata,
+                $versions,
+                $writes
+            );
             """,
-            {"payload": payload},
+            {
+                "payload": payload,
+                "thread_id": thread_id,
+                "checkpoint_ns": checkpoint_ns,
+                "checkpoint_id": checkpoint_id,
+                "parent_checkpoint_id": parent_checkpoint_id,
+                "created_at": created_at,
+                "checkpoint": checkpoint,
+                "metadata": metadata,
+                "versions": versions,
+                "writes": writes,
+            },
         )
 
     async def _enforce_retention(self, thread_id: str, checkpoint_ns: str) -> None:

@@ -25,7 +25,24 @@ def _parse_csv_env(name: str, default: str) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
-ALLOW_ORIGINS = _parse_csv_env("CORS_ORIGINS", "http://localhost:8001, http://127.0.0.1:8001")
+def _coerce_query_rows(result: object) -> list[dict]:
+    if result is None:
+        return []
+    if isinstance(result, list):
+        if len(result) == 1 and isinstance(result[0], dict) and "result" in result[0]:
+            payload = result[0].get("result", [])
+            return payload if isinstance(payload, list) else ([payload] if payload else [])
+        return [row for row in result if row is not None and isinstance(row, dict)]
+    if isinstance(result, dict) and "result" in result:
+        payload = result.get("result", [])
+        return payload if isinstance(payload, list) else ([payload] if payload else [])
+    return []
+
+
+ALLOW_ORIGINS = _parse_csv_env(
+    "CORS_ORIGINS",
+    "http://localhost:8001, http://127.0.0.1:8001, http://localhost:8080, http://127.0.0.1:8080",
+)
 API_KEYS = set(_parse_csv_env("GODEYE_API_KEYS", os.getenv("API_KEYS", "")))
 
 
@@ -137,7 +154,7 @@ async def api_events(
                 "SELECT * FROM event WHERE scenario = $scenario ORDER BY start_time;",
                 {"scenario": scenario},
             )
-        return {"events": res[0]["result"] if res else []}
+        return {"events": _coerce_query_rows(res)}
     except Exception as e:
         logger.exception("api_events failed: %s", e)
         raise HTTPException(status_code=500, detail="Events query failed. Check server logs.")
@@ -181,7 +198,7 @@ async def api_scenarios(_auth: Optional[str] = Depends(require_api_key)):
     db = await get_surreal_client()
     try:
         res = await db.query("SELECT scenario FROM event GROUP BY scenario;")
-        rows = res[0]["result"] if res else []
+        rows = _coerce_query_rows(res)
         scenarios = sorted({r["scenario"] for r in rows if r.get("scenario")})
         return {"scenarios": scenarios}
     except Exception as e:
@@ -247,7 +264,7 @@ async def api_observations(
             f"SELECT * FROM observation {where} ORDER BY time LIMIT $limit;",
             params,
         )
-        return {"observations": res[0]["result"] if res else []}
+        return {"observations": _coerce_query_rows(res)}
     except Exception as e:
         logger.exception("api_observations failed: %s", e)
         raise HTTPException(status_code=500, detail="Observations query failed. Check server logs.")
@@ -270,7 +287,7 @@ async def api_entities(
             )
         else:
             res = await db.query("SELECT * FROM entity ORDER BY name;")
-        return {"entities": res[0]["result"] if res else []}
+        return {"entities": _coerce_query_rows(res)}
     except Exception as e:
         logger.exception("api_entities failed: %s", e)
         raise HTTPException(status_code=500, detail="Entities query failed. Check server logs.")
@@ -293,7 +310,7 @@ async def api_replay(req: ReplayRequest, _auth: Optional[str] = Depends(require_
     }
     thread_id = state["thread_id"]
     try:
-        result = await graph.ainvoke(state, config={"configurable": {"thread_id": thread_id}})
+        result = await graph.ainvoke(state, config={"configurable": {"thread_id": thread_id, "checkpoint_ns": "replay"}})
     except Exception as e:
         logger.exception("Graph invocation failed: %s", e)
         raise HTTPException(status_code=500, detail="Replay failed. Check server logs.")

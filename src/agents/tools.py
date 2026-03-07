@@ -24,6 +24,20 @@ _embeddings: HuggingFaceEmbeddings | None = None
 _embeddings_lock = threading.Lock()
 
 
+def _coerce_query_rows(result: object) -> list[dict]:
+    if result is None:
+        return []
+    if isinstance(result, list):
+        if len(result) == 1 and isinstance(result[0], dict) and "result" in result[0]:
+            payload = result[0].get("result", [])
+            return payload if isinstance(payload, list) else ([payload] if payload else [])
+        return [row for row in result if row is not None and isinstance(row, dict)]
+    if isinstance(result, dict) and "result" in result:
+        payload = result.get("result", [])
+        return payload if isinstance(payload, list) else ([payload] if payload else [])
+    return []
+
+
 def compute_noisy_or_confidence(obs_count: int) -> float:
     """Return diminishing evidence-weight confidence for a count of observations."""
     if obs_count <= 0:
@@ -156,7 +170,7 @@ async def fuse_events(from_time: str, to_time: str, region: Optional[str] = None
         res = await _query_with_timeout(
             db,
             """
-            LET $rows = SELECT
+            SELECT
                 feed_type,
                 time::floor(time, 10m) AS bucket_start,
                 array::group(id) AS obs_ids
@@ -164,13 +178,11 @@ async def fuse_events(from_time: str, to_time: str, region: Optional[str] = None
             WHERE time >= <datetime>$from
               AND time < <datetime>$to
             GROUP BY feed_type, bucket_start;
-
-            RETURN $rows;
             """,
             {"from": from_time, "to": to_time},
         )
 
-        groups = res[1]["result"] if len(res) > 1 and res[1]["result"] else []
+        groups = _coerce_query_rows(res)
         created_events = []
 
         for g in groups:
@@ -220,7 +232,10 @@ async def fuse_events(from_time: str, to_time: str, region: Optional[str] = None
                         "details": {"region_name": region, "region": region} if region else None,
                     },
                 )
-                ev = ev_res[0]["result"][0]
+                ev_rows = _coerce_query_rows(ev_res)
+                if not ev_rows:
+                    continue
+                ev = ev_rows[0]
             except Exception as e:
                 logger.error("Failed to create event for feed_type=%s bucket=%s: %s", feed_type, bucket_start, e)
                 continue
@@ -248,7 +263,7 @@ async def fuse_events(from_time: str, to_time: str, region: Optional[str] = None
                     """,
                     {"obs_ids": obs_ids},
                 )
-                rows = ent_res[0]["result"] if ent_res and ent_res[0]["result"] else []
+                rows = _coerce_query_rows(ent_res)
                 ents = [e for row in rows for e in (row.get("ents") or [])]
             except Exception as e:
                 logger.warning("Failed to fetch entities for event %s: %s", ev["id"], e)
@@ -310,7 +325,10 @@ async def fuse_events(from_time: str, to_time: str, region: Optional[str] = None
                         "details": {"region_name": region, "region": region} if region else None,
                     },
                 )
-                corr_ev = corr_res[0]["result"][0]
+                corr_rows = _coerce_query_rows(corr_res)
+                if not corr_rows:
+                    continue
+                corr_ev = corr_rows[0]
             except Exception as e:
                 logger.warning("Failed to create correlation event for bucket %s: %s", bucket_start, e)
                 continue
@@ -363,7 +381,7 @@ async def get_timeline(from_time: str, to_time: str, scenario: Optional[str] = N
             """,
             {"from": from_time, "to": to_time, "scenario": scenario or "EPIC_FURY_DEMO"},
         )
-        return res[0]["result"] if res else []
+        return _coerce_query_rows(res)
     except Exception as e:
         logger.exception("get_timeline failed: %s", e)
         return []
@@ -402,7 +420,7 @@ async def get_high_sev_jamming_on_tankers(from_time: str, to_time: str, scenario
             """,
             {"from": from_time, "to": to_time, "scenario": scenario},
         )
-        return res[0]["result"] if res else []
+        return _coerce_query_rows(res)
     except Exception as e:
         logger.exception("get_high_sev_jamming_on_tankers failed: %s", e)
         return []
@@ -453,12 +471,12 @@ async def vector_search(query: str, k: int = 3) -> list:
             logger.warning("BM25 search failed (falling back to vector only): %s", bm25_res)
             bm25_rows = []
         else:
-            bm25_rows = bm25_res[0]["result"] if bm25_res else []
+            bm25_rows = _coerce_query_rows(bm25_res)
         if isinstance(vec_res, BaseException):
             logger.warning("Vector search failed (falling back to BM25 only): %s", vec_res)
             vec_rows = []
         else:
-            vec_rows = vec_res[0]["result"] if vec_res else []
+            vec_rows = _coerce_query_rows(vec_res)
 
         # Reciprocal Rank Fusion: score = sum(1 / (rrf_k + rank)) across both lists.
         # k=60 was tuned on TREC web corpora; lower values (20-40) increase rank
@@ -507,7 +525,7 @@ async def flag_suspicious_event(event_id: str, reason: str, flagged_by: str = "a
             """,
             {"event_id": event_id, "reason": reason},
         )
-        if existing and existing[0].get("result"):
+        if _coerce_query_rows(existing):
             return {"status": "already_flagged", "event_id": event_id, "reason": reason}
 
         await _query_with_timeout(
@@ -550,7 +568,7 @@ async def get_event_annotations(event_ids: List[str]) -> list:
             """,
             {"event_ids": event_ids},
         )
-        return res[0].get("result", []) if res else []
+        return _coerce_query_rows(res)
     except Exception as e:
         logger.warning("get_event_annotations failed: %s", e)
         return []
