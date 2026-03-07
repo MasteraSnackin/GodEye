@@ -32,7 +32,7 @@ def _coerce_query_rows(result: object) -> list[dict]:
 class SurrealDBCheckpointSaver(BaseCheckpointSaver):
     """Persist LangGraph checkpoints in SurrealDB for resumable multi-step workflows."""
 
-    def __init__(self, timeout_seconds: float = 5.0, max_checkpoints_per_thread: int | None = None):
+    def __init__(self, timeout_seconds: float = 20.0, max_checkpoints_per_thread: int | None = None):
         super().__init__()
         self.timeout_seconds = timeout_seconds
         self.max_checkpoints_per_thread = max_checkpoints_per_thread

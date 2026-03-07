@@ -228,8 +228,8 @@ async def fuse_events(from_time: str, to_time: str, region: Optional[str] = None
                         "severity": severity,
                         "confidence": confidence,
                         "scenario": scenario,
-                        "region": region,
-                        "details": {"region_name": region, "region": region} if region else None,
+                        "region": None,
+                        "details": None,
                     },
                 )
                 ev_rows = _coerce_query_rows(ev_res)
@@ -321,8 +321,8 @@ async def fuse_events(from_time: str, to_time: str, region: Optional[str] = None
                         "confidence": corr_conf,
                         "source_tags": feed_types + ["auto-correlate"],
                         "scenario": scenario,
-                        "region": region,
-                        "details": {"region_name": region, "region": region} if region else None,
+                        "region": None,
+                        "details": None,
                     },
                 )
                 corr_rows = _coerce_query_rows(corr_res)
@@ -574,3 +574,4 @@ async def get_event_annotations(event_ids: List[str]) -> list:
         return []
     finally:
         await db.close()
+

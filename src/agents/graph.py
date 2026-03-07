@@ -158,10 +158,10 @@ async def reconstruct_node(state: State) -> State:
     # Optional graph annotations (agent + operator review context) are kept in
     # SurrealDB and fed into the narrative prompt as additional memory.
     event_annotations: list[dict] = []
-    event_ids = [ev.get("id") for ev in timeline if isinstance(ev, dict) and ev.get("id")]
+    event_ids = [str(ev.get("id")) for ev in timeline if isinstance(ev, dict) and ev.get("id")]
     if event_ids:
         high_events = [
-            ev["id"]
+            str(ev["id"])
             for ev in timeline
             if isinstance(ev, dict) and ev.get("severity") == "high" and ev.get("id")
         ]
