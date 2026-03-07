@@ -3,6 +3,7 @@ import logging
 from datetime import datetime
 
 from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.memory import MemorySaver
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage
 
@@ -203,4 +204,4 @@ def build_graph():
     builder.add_edge("reconstruct_node", "narrate_node")
     builder.add_edge("narrate_node", END)
 
-    return builder.compile()
+    return builder.compile(checkpointer=MemorySaver())

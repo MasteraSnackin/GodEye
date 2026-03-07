@@ -1,3 +1,4 @@
+import hashlib
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -229,8 +230,9 @@ async def api_replay(req: ReplayRequest):
         "scenario": req.scenario,
         "query": req.query,
     }
+    thread_id = hashlib.md5(f"{req.scenario}:{req.from_time}:{req.to_time}".encode()).hexdigest()
     try:
-        result = await graph.ainvoke(state)
+        result = await graph.ainvoke(state, config={"configurable": {"thread_id": thread_id}})
     except Exception as e:
         logger.exception("Graph invocation failed: %s", e)
         raise HTTPException(status_code=500, detail="Replay failed. Check server logs.")
