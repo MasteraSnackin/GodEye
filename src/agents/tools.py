@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import threading
 from collections import defaultdict
 from typing import Optional, List
 
@@ -17,12 +18,18 @@ DB = "world"
 # all-mpnet-base-v2: 768-dim, MTEB STS 69.6 vs all-MiniLM-L6-v2's 63.3 (~10% better retrieval).
 # Lazy-loaded on first vector_search call — avoids 2-5s startup delay and 420MB RAM if unused.
 _embeddings: HuggingFaceEmbeddings | None = None
+_embeddings_lock = threading.Lock()
 
 
 def _get_embeddings() -> HuggingFaceEmbeddings:
     global _embeddings
     if _embeddings is None:
-        _embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-mpnet-base-v2")
+        # Double-checked locking: run_in_executor spawns threads, so two concurrent cold-start
+        # requests would both pass the outer None check and double-load the 420MB model.
+        # The inner check inside the lock ensures only one thread initializes it.
+        with _embeddings_lock:
+            if _embeddings is None:
+                _embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-mpnet-base-v2")
     return _embeddings
 
 
@@ -153,16 +160,23 @@ async def fuse_events(from_time: str, to_time: str, region: Optional[str] = None
             )
             etype = "jamming" if feed_type == "jamming" else "anomaly"
 
-            # Confidence scales with evidence count: more observations = higher confidence.
-            # Linear scale: 1 obs = 0.2, 5+ obs = 1.0.
-            # (True D-S conjunctive rule would give 1-(1-b)^n, saturating more slowly.)
-            obs_count = len(obs_ids)
-            confidence = round(min(1.0, obs_count / 5.0), 2)
+            # Noisy-OR / Independent Evidence Accumulation (Pearl 1988):
+            # confidence = 1 - (1 - b)^n, where b = 0.2 (belief per observation).
+            # Benchmark vs. old linear min(1.0, n/5.0):
+            #   n=1: 0.20 (same)  n=2: 0.36 (was 0.40)  n=3: 0.49 (was 0.60)
+            #   n=5: 0.67 (was 1.00 — linear was overconfident, claiming certainty)
+            #   n=10: 0.89        n=20: 0.99
+            # Evidence has diminishing marginal returns on certainty; Noisy-OR reflects this.
+            obs_count  = len(obs_ids)
+            confidence = round(1.0 - 0.8 ** obs_count, 2)
 
-            # Severity tiered by count; jamming always high regardless of count.
-            if feed_type == "jamming" or obs_count >= 5:
+            # Severity derived from calibrated confidence, not raw count.
+            # Thresholds match the Noisy-OR boundary points for 5-obs (≥0.67) and 2-obs (≥0.36),
+            # preserving backward-compatible qualitative behaviour while making derivation principled.
+            # Jamming is always high regardless of evidence weight.
+            if feed_type == "jamming" or confidence >= 0.67:
                 severity = "high"
-            elif obs_count >= 2:
+            elif confidence >= 0.36:
                 severity = "medium"
             else:
                 severity = "low"
@@ -252,7 +266,7 @@ async def fuse_events(from_time: str, to_time: str, region: Optional[str] = None
             feed_types    = sorted({g["feed_type"] for g in bucket_groups})
             all_obs_ids   = [oid for g in bucket_groups for oid in g["obs_ids"]]
             obs_count     = len(all_obs_ids)
-            corr_conf     = round(min(1.0, obs_count / 5.0), 2)
+            corr_conf     = round(1.0 - 0.8 ** obs_count, 2)  # Noisy-OR, consistent with per-feed confidence
 
             try:
                 corr_res = await db.query(
@@ -309,7 +323,9 @@ async def fuse_events(from_time: str, to_time: str, region: Optional[str] = None
 @tool("get_timeline", return_direct=False)
 async def get_timeline(from_time: str, to_time: str, scenario: Optional[str] = None) -> List[dict]:
     """
-    Get events and their linked observations and entities for a window.
+    Get events and their involved entities for a time window.
+    Omits ->evidence->observation: raw observations are not used in prompts or the
+    frontend, and the multi-hop traversal adds latency + bloats the LLM payload 5-10x.
     """
     db = await get_surreal_client()
     try:
@@ -317,7 +333,6 @@ async def get_timeline(from_time: str, to_time: str, scenario: Optional[str] = N
             """
             SELECT
                 *,
-                ->evidence->observation AS observations,
                 ->involves->entity AS entities
             FROM event
             WHERE start_time >= <datetime>$from
@@ -397,6 +412,7 @@ async def vector_search(query: str, k: int = 3) -> list:
     db = await get_surreal_client()
     try:
         # BM25 and vector queries are independent — run concurrently.
+        # return_exceptions=True: a failed BM25 index still allows vector results through (and vice versa).
         bm25_res, vec_res = await asyncio.gather(
             db.query(
                 "SELECT id, text, source, time FROM doc_chunk WHERE text @@ $query LIMIT $fetch_k;",
@@ -406,9 +422,18 @@ async def vector_search(query: str, k: int = 3) -> list:
                 f"SELECT id, text, source, time FROM doc_chunk WHERE embedding <|{fetch_k},COSINE|> $vec;",
                 {"vec": query_vec},
             ),
+            return_exceptions=True,
         )
-        bm25_rows = bm25_res[0]["result"] if bm25_res else []
-        vec_rows  = vec_res[0]["result"]  if vec_res  else []
+        if isinstance(bm25_res, BaseException):
+            logger.warning("BM25 search failed (falling back to vector only): %s", bm25_res)
+            bm25_rows = []
+        else:
+            bm25_rows = bm25_res[0]["result"] if bm25_res else []
+        if isinstance(vec_res, BaseException):
+            logger.warning("Vector search failed (falling back to BM25 only): %s", vec_res)
+            vec_rows = []
+        else:
+            vec_rows = vec_res[0]["result"] if vec_res else []
 
         # Reciprocal Rank Fusion: score = sum(1 / (rrf_k + rank)) across both lists.
         # k=60 was tuned on TREC web corpora; lower values (20-40) increase rank

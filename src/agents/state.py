@@ -13,5 +13,6 @@ class State(TypedDict, total=False):
     prev_events: Optional[List[dict]]
     context_docs: Optional[List[dict]]
     baseline_docs: Optional[List[dict]]
+    entity_docs: Optional[List[dict]]
     event_summary: Optional[str]
     narrative: Optional[str]
