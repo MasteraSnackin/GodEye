@@ -397,6 +397,24 @@ python demo.py
 
 ---
 
+## Open-source LangChain Integration
+
+The retrieval and checkpointing components have been extracted as a standalone, reusable package:
+
+**[langchain-surrealdb](https://github.com/MasteraSnackin/langchain-surrealdb)** — LangChain + LangGraph integrations for SurrealDB.
+
+| Component | Description |
+|---|---|
+| `SurrealDBRetriever` | `BaseRetriever` — hybrid BM25 + HNSW vector search with RRF |
+| `SurrealDBChatMessageHistory` | `BaseChatMessageHistory` — persistent per-session chat history |
+| `SurrealDBSaver` | `BaseCheckpointSaver` — replaces `MemorySaver` with durable, multi-process LangGraph state |
+
+```bash
+pip install langchain-surrealdb
+```
+
+---
+
 ## Contributing
 
 Contributions are welcome.
