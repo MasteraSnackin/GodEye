@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 
 from src.agents.graph import build_graph
 from src.agents.state import State
@@ -11,6 +12,7 @@ SCENARIO = "EPIC_FURY_DEMO"
 
 async def main():
     graph = build_graph()
+    thread_id = hashlib.md5(f"{SCENARIO}:{FROM_TIME}:{TO_TIME}".encode()).hexdigest()
 
     initial_state: State = {
         "mode": "replay",
@@ -19,9 +21,13 @@ async def main():
         "to_time": TO_TIME,
         "region": REGION,
         "scenario": SCENARIO,
+        "thread_id": thread_id,
     }
 
-    result = await graph.ainvoke(initial_state)
+    result = await graph.ainvoke(
+        initial_state,
+        config={"configurable": {"thread_id": thread_id, "checkpoint_ns": "replay"}},
+    )
 
     print("\n=== GOD EYE DEMO ===\n")
     print("Narrative (structured vs baseline):\n")

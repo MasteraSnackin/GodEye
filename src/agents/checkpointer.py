@@ -63,7 +63,7 @@ class SurrealDBCheckpointSaver(BaseCheckpointSaver):
     def _extract_id(config: RunnableConfig) -> tuple[str, str, str | None]:
         cfg = config.get("configurable", {})
         thread_id = cfg["thread_id"]
-        checkpoint_ns = cfg.get("checkpoint_ns", "")
+        checkpoint_ns = cfg.get("checkpoint_ns") or "replay"
         checkpoint_id = cfg.get("checkpoint_id")
         return thread_id, checkpoint_ns, checkpoint_id
 
