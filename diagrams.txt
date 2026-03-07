@@ -1,0 +1,259 @@
+1. High-level system context
+```mermaid
+flowchart LR
+  U[User] --> UI[Web Frontend]
+  U --> CLI[CLI / demo.py]
+
+  UI -->|POST /api/replay\nGET /api/events\nGET /health| API[FastAPI :8001]
+  CLI --> LG[LangGraph Agent]
+
+  API --> LG
+  LG <--> SDB[(SurrealDB\nentity / observation / event / doc_chunk / agent_log)]
+  LG -->|LLM calls| ANT[Anthropic Claude\nclaude-sonnet-4-6]
+```
+The four main actors: user (web or CLI), FastAPI gateway, LangGraph agent, SurrealDB world model.
+Anthropic is the only external service dependency; all other state is local.
+
+
+2. Container / component view
+```mermaid
+flowchart TB
+  subgraph Client["Client Layer"]
+    UI[Web Frontend\nHTML/CSS/JS]
+    CLI[CLI\ndemo.py]
+  end
+
+  subgraph API["API Layer"]
+    GW[FastAPI\n/api/replay  /api/events  /health]
+  end
+
+  subgraph Agent["Agent Layer — LangGraph"]
+    RN[reconstruct_node]
+    NN[narrate_node]
+    RN --> NN
+  end
+
+  subgraph Tools["Agent Tools"]
+    FE[fuse_events]
+    VS[vector_search\nBM25 + HNSW RRF]
+    GT[get_timeline]
+  end
+
+  subgraph DB["World Model — SurrealDB"]
+    EVT[(event)]
+    OBS[(observation)]
+    ENT[(entity)]
+    DOC[(doc_chunk\nHNSW 768d + BM25)]
+    LOG[(agent_log)]
+  end
+
+  UI --> GW
+  CLI --> Agent
+  GW --> Agent
+
+  RN -->|concurrent| FE
+  RN -->|concurrent| VS
+  FE --> GT
+
+  FE <--> EVT & OBS & ENT
+  FE --> LOG
+  VS <--> DOC
+  GT <--> EVT & OBS & ENT
+```
+Both CLI and web paths converge on the same LangGraph graph and SurrealDB instance.
+The two concurrent arrows from reconstruct_node represent asyncio.gather — fusion and vector search run in parallel.
+
+
+3. Sequence: replay request (web path)
+```mermaid
+sequenceDiagram
+  participant U as User
+  participant UI as Web UI
+  participant API as FastAPI
+  participant RN as reconstruct_node
+  participant NN as narrate_node
+  participant DB as SurrealDB
+  participant LLM as Claude
+
+  U->>UI: Fill form (from/to, region, scenario, question)
+  UI->>API: POST /api/replay
+  API->>API: Validate ISO 8601 timestamps (Pydantic)
+  API->>RN: graph.ainvoke(state)
+
+  par asyncio.gather
+    RN->>DB: DELETE events for window (idempotency)
+    RN->>DB: GROUP observations → buckets
+    RN->>DB: CREATE events + batch RELATE evidence
+    RN->>DB: Correlation pass → CREATE multi events
+    DB-->>RN: fused events
+  and
+    RN->>DB: BM25 text search (k×3 candidates)
+    RN->>DB: HNSW vector search (k×3 candidates)
+    RN->>RN: RRF merge → top-5 docs
+  end
+
+  RN->>DB: SELECT events + graph traversal (get_timeline)
+  DB-->>RN: events + observations + entities
+
+  par asyncio.gather
+    NN->>LLM: Narrative prompt (events + docs)
+    NN->>LLM: Summary prompt (events)
+    LLM-->>NN: narrative text
+    LLM-->>NN: summary text
+  end
+
+  NN-->>API: { narrative, event_summary, events }
+  API-->>UI: JSON response
+  UI-->>U: Rendered narrative + summary + events table
+```
+The two par blocks show the two asyncio.gather calls. Fusion and vector search run concurrently in reconstruct_node;
+narrative and summary LLM calls run concurrently in narrate_node. get_timeline is sequential (depends on fusion output).
+
+
+4. Sequence: event fusion in detail
+```mermaid
+sequenceDiagram
+  participant LG as fuse_events
+  participant DB as SurrealDB
+
+  LG->>DB: LOG agent_log { action: start_fuse }
+  LG->>DB: DELETE events WHERE window + scenario (idempotency)
+
+  LG->>DB: SELECT + GROUP observations by (feed_type, floor(time,10m))
+  DB-->>LG: grouped buckets [ {feed_type, bucket_start, obs_ids} ]
+
+  loop per (feed_type, bucket)
+    LG->>LG: confidence = min(1.0, obs_count / 5.0)
+    LG->>LG: severity = high/medium/low by count (jamming always high)
+    LG->>DB: CREATE event { type, axis, severity, confidence, scenario }
+    DB-->>LG: event record
+
+    LG->>DB: FOR obs IN obs_ids RELATE event->evidence->obs (batch)
+    LG->>DB: SELECT <-observed_in<-entity (graph traversal)
+    DB-->>LG: entity list
+
+    loop per entity
+      LG->>DB: RELATE event->involves->entity SET role='asset'
+    end
+  end
+
+  note over LG,DB: Cross-feed correlation pass
+  loop per bucket with ≥2 distinct feed_types
+    LG->>DB: CREATE event { type:'correlation', axis:'multi', severity:'high' }
+    LG->>DB: FOR obs IN all_obs_ids RELATE corr_event->evidence->obs (batch)
+  end
+
+  LG->>DB: LOG agent_log { action: end_fuse, created_events: N }
+```
+DELETE-before-write makes fusion idempotent. Evidence linking is batched (one query per event, not per observation).
+The correlation pass runs after the main loop, creating additional multi-axis events for co-occurring feeds.
+
+
+5. Sequence: hybrid vector retrieval (RRF)
+```mermaid
+sequenceDiagram
+  participant VS as vector_search
+  participant EM as all-mpnet-base-v2\n(local CPU)
+  participant DB as SurrealDB
+
+  VS->>EM: embed_query(user_query)
+  EM-->>VS: 768-dim vector
+
+  par asyncio.gather
+    VS->>DB: SELECT doc_chunk WHERE text @@ query LIMIT k*3  (BM25)
+    DB-->>VS: bm25_rows [ ranked by BM25 score ]
+  and
+    VS->>DB: SELECT doc_chunk WHERE embedding <|k*3,COSINE|> vec  (HNSW)
+    DB-->>VS: vec_rows [ ranked by cosine similarity ]
+  end
+
+  VS->>VS: RRF merge: score[id] += 1/(60 + rank) for each list
+  VS->>VS: sort by RRF score, return top-k
+```
+Both DB queries are independent and run concurrently. RRF (k=60) rewards documents that rank highly in either list
+and doubly rewards those that rank well in both — combining keyword precision with semantic recall.
+
+
+6. Data flow: ingestion to replay
+```mermaid
+flowchart LR
+  subgraph Ingestion
+    FIX[synthetic_world.json] --> LOADER[load_synthetic_world.py]
+    LOADER -->|embed_documents\nall-mpnet-base-v2| EMB[768-dim vectors]
+    LOADER --> SDB[(SurrealDB)]
+    EMB --> SDB
+  end
+
+  subgraph Fusion
+    FUSER[fuse_events] -->|write events\ncorrelation events| SDB
+    SDB -->|read observations| FUSER
+  end
+
+  subgraph Retrieval
+    VS[vector_search\nBM25 + HNSW RRF] <--> SDB
+  end
+
+  subgraph Narration
+    LG[narrate_node] -->|2x concurrent LLM| ANT[Anthropic Claude]
+    ANT --> OUT[narrative + event_summary]
+  end
+
+  SDB -->|get_timeline| LG
+  VS --> LG
+  OUT --> CLI[CLI / demo.py]
+  OUT --> UI[Web UI]
+```
+Pipeline: fixtures → DB (with 768-dim embeddings) → fusion + correlation → hybrid retrieval → LLM narration → outputs.
+
+
+7. Data model (entities and relations)
+```mermaid
+erDiagram
+  ENTITY {
+    string type
+    string name
+    object coords
+    object metadata
+  }
+
+  OBSERVATION {
+    string feed_type
+    datetime time
+    object position
+    string value
+    object raw
+  }
+
+  EVENT {
+    string type
+    datetime start_time
+    datetime end_time
+    float confidence
+    string severity
+    string axis
+    string scenario
+    array source_tags
+  }
+
+  DOC_CHUNK {
+    string text
+    string source
+    datetime time
+    array embedding_768d
+  }
+
+  AGENT_LOG {
+    datetime time
+    string agent
+    string action
+    object details
+  }
+
+  ENTITY ||--o{ OBSERVATION : "observed_in"
+  EVENT  ||--o{ OBSERVATION : "evidence"
+  EVENT  ||--o{ ENTITY      : "involves"
+```
+EVENT.type may be 'anomaly', 'jamming', or 'correlation' (multi-feed co-occurrence).
+EVENT.confidence is calibrated: 0.2 = 1 observation, 1.0 = 5+ observations (Dempster-Shafer accumulation).
+DOC_CHUNK has two indices: HNSW (768d COSINE) for vector search and BM25 (text_en analyser) for keyword search.
+AGENT_LOG is standalone — populated by fuse_events with start_fuse / end_fuse records.

@@ -1,0 +1,46 @@
+# Environment / secrets — never commit these
+.env
+*.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+venv/
+.venv/
+env/
+ENV/
+
+# HuggingFace model cache (large binary downloads)
+.cache/
+~/.cache/huggingface/
+
+# Claude Code local config
+.claude/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+history.txt
+
+# SurrealDB data
+*.db
+*.surql.lock

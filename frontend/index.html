@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>GodEye — 4D OSINT Replay</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="toast-container"></div>
+    <div class="bg-mesh"></div>
+
+    <div class="app">
+      <!-- Sidebar -->
+      <aside class="sidebar">
+        <div class="sidebar__brand">
+          <div class="brand-icon">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="3"/>
+              <circle cx="12" cy="12" r="7" stroke-dasharray="2 3" opacity="0.5"/>
+              <path d="M12 2v3M12 19v3M2 12h3M19 12h3" stroke-width="1.5"/>
+            </svg>
+            <div class="brand-icon__scan"></div>
+          </div>
+          <div class="brand-text">
+            <span class="brand-name">GodEye</span>
+            <span class="brand-tag">OSINT</span>
+          </div>
+        </div>
+
+        <div class="sidebar__status">
+          <span class="status-dot" id="statusDot"></span>
+          <span class="status-label" id="statusLabel">Idle</span>
+        </div>
+
+        <nav class="sidebar__nav">
+          <a class="nav-item nav-item--active" href="#">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            Replay
+          </a>
+          <a class="nav-item" href="#events-section">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+            Events
+          </a>
+        </nav>
+
+        <div class="sidebar__meta">
+          <div class="meta-row">
+            <span class="meta-key">Scenario</span>
+            <span class="meta-val" id="sidebarScenario">—</span>
+          </div>
+          <div class="meta-row">
+            <span class="meta-key">Region</span>
+            <span class="meta-val" id="sidebarRegion">—</span>
+          </div>
+          <div class="meta-row">
+            <span class="meta-key">Events</span>
+            <span class="meta-val" id="sidebarEventCount">—</span>
+          </div>
+        </div>
+
+        <div class="sidebar__footer">
+          <span class="classification-badge">Restricted</span>
+          <span class="sidebar__version">v2.0</span>
+        </div>
+      </aside>
+
+      <!-- Main content -->
+      <main class="content">
+        <!-- Controls -->
+        <section class="controls-panel">
+          <div class="controls-header">
+            <div>
+              <p class="panel-eyebrow">4D Replay System</p>
+              <h2 class="panel-title">Mission Parameters</h2>
+            </div>
+            <button class="btn btn--primary" id="runBtn" title="Run Replay (Ctrl+Enter)">
+              <span class="btn__text">Run Replay</span>
+              <span class="btn__spinner" hidden>
+                <svg class="spinner" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+              </span>
+            </button>
+          </div>
+          <div class="controls-grid">
+            <label class="field">
+              <span class="field__label">From (UTC)</span>
+              <input class="field__input mono" id="fromTime" type="text" value="2026-02-28T02:00:00Z" />
+            </label>
+            <label class="field">
+              <span class="field__label">To (UTC)</span>
+              <input class="field__input mono" id="toTime" type="text" value="2026-02-28T04:00:00Z" />
+            </label>
+            <label class="field">
+              <span class="field__label">Region</span>
+              <input class="field__input" id="region" type="text" value="Hormuz" />
+            </label>
+            <label class="field">
+              <span class="field__label">Scenario</span>
+              <input class="field__input mono" id="scenario" type="text" value="EPIC_FURY_DEMO" />
+            </label>
+            <label class="field field--wide">
+              <span class="field__label">Intelligence Query</span>
+              <div class="field__terminal">
+                <span class="field__prompt">›_</span>
+                <input class="field__input" id="query" type="text" value="What anomalies occurred in this window?" />
+              </div>
+            </label>
+          </div>
+        </section>
+
+        <!-- Bento grid -->
+        <div class="bento-grid">
+
+          <!-- Narrative card -->
+          <div class="bento-card bento-card--narrative" id="narrativeCard">
+            <div class="card-header">
+              <div class="card-header__left">
+                <span class="card-indicator card-indicator--blue"></span>
+                <span class="card-label">Intelligence Narrative</span>
+              </div>
+              <div class="card-header__right">
+                <span class="card-badge" id="narrativeBadge"></span>
+                <button class="copy-btn" id="narrativeCopyBtn" title="Copy narrative" hidden>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                </button>
+              </div>
+            </div>
+            <div class="card-body" id="narrativeBody">
+              <div class="empty-state">
+                <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.22"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                <p>Run a replay to generate an intelligence narrative.</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Summary card -->
+          <div class="bento-card bento-card--summary" id="summaryCard">
+            <div class="card-header">
+              <div class="card-header__left">
+                <span class="card-indicator card-indicator--violet"></span>
+                <span class="card-label">Event Summary</span>
+              </div>
+            </div>
+            <div class="card-body" id="summaryBody">
+              <div class="empty-state">
+                <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.22"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                <p>No events yet.</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Events table card -->
+          <div class="bento-card bento-card--events" id="events-section">
+            <div class="card-header">
+              <div class="card-header__left">
+                <span class="card-indicator card-indicator--cyan"></span>
+                <span class="card-label">Event Timeline</span>
+              </div>
+              <span class="card-count" id="eventCount"></span>
+            </div>
+            <div class="card-body card-body--table">
+              <div class="table-empty" id="tableEmpty">
+                <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.22"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>
+                <p>No events to display.</p>
+              </div>
+              <table class="events-table" id="eventsTable">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Type</th>
+                    <th>Axis</th>
+                    <th>Severity</th>
+                    <th>Conf.</th>
+                    <th>Start Time</th>
+                    <th>Tags</th>
+                  </tr>
+                </thead>
+                <tbody id="eventsBody"></tbody>
+              </table>
+            </div>
+          </div>
+
+        </div>
+      </main>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>

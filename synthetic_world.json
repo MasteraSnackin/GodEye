@@ -1,0 +1,111 @@
+{
+  "entities": [
+    {
+      "id": "aircraft_101",
+      "type": "aircraft",
+      "name": "EAGLE101",
+      "coords": { "lat": 25.0, "lon": 56.0 },
+      "metadata": { "callsign": "EAGLE101", "country": "US" }
+    },
+    {
+      "id": "ship_201",
+      "type": "ship",
+      "name": "HORMUZ_TANKER_A",
+      "coords": { "lat": 26.3, "lon": 56.4 },
+      "metadata": { "imo": "1234567", "flag": "PA" }
+    },
+    {
+      "id": "region_hormuz",
+      "type": "region",
+      "name": "Strait of Hormuz",
+      "coords": null,
+      "metadata": { "note": "Demo AOI" }
+    }
+  ],
+  "observations": [
+    {
+      "id": "obs_adsb_1",
+      "feed_type": "adsb",
+      "time": "2026-02-28T02:05:00Z",
+      "position": { "lat": 25.1, "lon": 56.1 },
+      "value": "ALT 32000",
+      "entity_id": "aircraft_101",
+      "entity_type": "aircraft",
+      "entity_name": "EAGLE101",
+      "raw": { "src": "synthetic", "note": "climb southeast" }
+    },
+    {
+      "id": "obs_adsb_2",
+      "feed_type": "adsb",
+      "time": "2026-02-28T02:12:00Z",
+      "position": { "lat": 25.4, "lon": 56.3 },
+      "value": "ALT 30000",
+      "entity_id": "aircraft_101",
+      "entity_type": "aircraft",
+      "entity_name": "EAGLE101",
+      "raw": { "src": "synthetic", "note": "near AOI" }
+    },
+    {
+      "id": "obs_ais_1",
+      "feed_type": "ais",
+      "time": "2026-02-28T02:07:00Z",
+      "position": { "lat": 26.3, "lon": 56.4 },
+      "value": "SPEED 14kt",
+      "entity_id": "ship_201",
+      "entity_type": "ship",
+      "entity_name": "HORMUZ_TANKER_A",
+      "raw": { "src": "synthetic", "note": "entering chokepoint" }
+    },
+    {
+      "id": "obs_ais_2",
+      "feed_type": "ais",
+      "time": "2026-02-28T02:20:00Z",
+      "position": { "lat": 26.3, "lon": 56.4 },
+      "value": "SPEED 0kt",
+      "entity_id": "ship_201",
+      "entity_type": "ship",
+      "entity_name": "HORMUZ_TANKER_A",
+      "raw": { "src": "synthetic", "note": "stopped in AOI" }
+    },
+    {
+      "id": "obs_jam_1",
+      "feed_type": "jamming",
+      "time": "2026-02-28T02:10:00Z",
+      "position": { "lat": 26.0, "lon": 56.2 },
+      "value": "JAM_STRONG",
+      "entity_id": null,
+      "raw": { "src": "synthetic", "note": "GPS jamming burst" }
+    },
+    {
+      "id": "obs_net_1",
+      "feed_type": "net",
+      "time": "2026-02-28T02:15:00Z",
+      "position": null,
+      "value": "PACKET_LOSS_SPIKE",
+      "entity_id": "region_hormuz",
+      "entity_type": "region",
+      "entity_name": "Strait of Hormuz",
+      "raw": { "src": "synthetic", "note": "transient connectivity issue" }
+    }
+  ],
+  "doc_chunks": [
+    {
+      "id": "doc_1",
+      "text": "NOTAM: Airspace restrictions in the Strait of Hormuz from 0200Z to 0400Z due to military activity.",
+      "source": "NOTAM",
+      "time": "2026-02-28T02:00:00Z"
+    },
+    {
+      "id": "doc_2",
+      "text": "Maritime advisory: tankers advised to reduce speed and await clearance when GPS interference is detected near Hormuz.",
+      "source": "advisory",
+      "time": "2026-02-28T01:30:00Z"
+    },
+    {
+      "id": "doc_3",
+      "text": "Open-source reports indicate intermittent GPS jamming and internet slowdowns coinciding with regional air operations.",
+      "source": "news",
+      "time": "2026-02-28T03:00:00Z"
+    }
+  ]
+}
