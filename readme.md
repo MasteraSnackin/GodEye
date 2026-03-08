@@ -352,7 +352,8 @@ Screenshots below are from the current dashboard flow and replay outputs.
 **Additional interaction captures**
 
 ![Replay attempt final](frontend_replay_attempt_final.png)
-![Frontend home](frontend_home.png)
+![Screenshot 2026-03-07 221746](https://github.com/user-attachments/assets/ba936e43-a522-42c1-9546-ae00474324d4)
+
 
 **Demo endpoint URLs (local)**
 
