@@ -9,6 +9,7 @@
 ![LangGraph](https://img.shields.io/badge/LangGraph-agent--graph-purple)
 ![SurrealDB](https://img.shields.io/badge/SurrealDB-3.x-ff69b4)
 
+[▶ Watch Demo Video](https://drive.google.com/file/d/1Xq4K5hptL8n1ZE3sG9hXjmodqaOmm0Eh/view?usp=sharing)
 ---
 
 ## Description
