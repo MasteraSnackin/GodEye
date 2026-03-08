@@ -19,6 +19,8 @@ Unlike shallow RAG systems that retrieve documents and hope for the best, GodEye
 
 Built for AI engineers, data engineers, and OSINT-curious developers who want a concrete, production-shaped pattern for agent workflows over graph + vector data.
 
+This project would not be feasible in its current form without both LangChain/LangGraph and SurrealDB. LangChain/LangGraph provides the orchestration layer for deterministic multi-step agent execution (tooling, parallel phases, retries/fallbacks, and persistent checkpoint flow), while SurrealDB provides the unified persistent substrate where graph relationships, time-windowed events, vector/BM25 retrieval data, and replay state all coexist and evolve together. If either side is removed, the system loses a core property: without LangGraph, reliable stateful orchestration and tool coordination break down; without SurrealDB, the structured, evolving world model that makes the agent reliable and auditable disappears.
+
 ---
 
 ## Table of Contents
@@ -520,7 +522,7 @@ The repository includes a GitHub Actions workflow at `.github/workflows/ci.yml` 
 ---
 
 ## Roadmap
-
+- **Langsmith** - issue with configuration / deployment onto with langsmith but was informed this sunday morning it now fix will try again.
 - **DBSCAN spatiotemporal clustering** — replace hard 10-minute fixed windows with density-based grouping over `(lat, lon, time)`, eliminating split-at-boundary artefacts.
 - **Real data sources** — live ADS-B via dump1090, AIS via AISHub, configurable OSINT feed ingestion pipeline.
 - **Streaming fusion** — SurrealDB LIVE SELECT for real-time event creation as observations land, rather than batch replay.

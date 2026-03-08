@@ -102,6 +102,8 @@ flowchart TB
 - `AbortController` cancels in-flight requests if the user re-submits before a response arrives.
 - Displays skeleton loaders during request, severity distribution bar, confidence sparkbars, expandable row detail panel, and toast notifications.
 - Copy-to-clipboard on the narrative panel; global `Ctrl+Enter` shortcut.
+- Supports replay presets (save/load/delete), role views (`Analyst` / `Operator`), and richer analytics cards (diff, alerts, scorecard, latency, data quality).
+- Observation map includes feed filters, mode filters (`All`, `Only Anomalies`, `High-Severity Linked`), a time scrubber with play/pause, marker detail panel, and interactive observation list.
 
 **Owns no data.** All state lives in SurrealDB or the API response.
 
@@ -123,13 +125,19 @@ flowchart TB
 | `GET` | `/api/entities` | Returns all entities, optionally filtered by type |
 | `GET` | `/api/scenarios` | Lists all distinct scenario names |
 | `GET` | `/api/jamming/tankers` | High-severity jamming events linked to ship entities via graph traversal |
-| `POST` | `/api/replay` | Full pipeline: fusion → timelines → Graph-RAG → LLM narration |
+| `POST` | `/api/replay` | Full pipeline: fusion → timelines → Graph-RAG → LLM narration + runtime/observability metadata |
 
 **Startup:** A FastAPI `lifespan` context manager pre-warms 3 SurrealDB pool connections at startup, eliminating the ~50ms WebSocket handshake + auth cost on the first 3 concurrent requests.
 
 **Validation:** `ReplayRequest` Pydantic model validates `from_time`/`to_time` as ISO 8601 via `field_validator`. All GET endpoints validate optional datetime parameters inline. Invalid inputs return HTTP 422 before the agent graph or DB is touched.
 
 **Error surface:** All agent and DB exceptions are caught and re-raised as `HTTPException` with static detail strings — no stack traces or internal messages leak to the client.
+
+**Replay response metadata (evening update):**
+- `runtime_metrics`: per-phase timing (`phase1_ms`, `phase2_ms`, `phase3_ms`, `total_reconstruct_ms`, `narrate_ms`, `total_ms`)
+- `llm_model_used`: effective model ID used by narrative/summary generation
+- `thread_id`: deterministic replay thread ID used by checkpointing
+- `trace_url`: optional LangSmith run URL (when `LANGSMITH_RUN_BASE_URL` is configured)
 
 ---
 

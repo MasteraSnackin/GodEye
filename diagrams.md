@@ -297,3 +297,54 @@ EVENT.confidence uses Noisy-OR (Pearl 1988): 1 - 0.8^n. n=1 → 0.20 tentative, 
 EVENT.details stores {region_name} when a region is provided; null otherwise.
 DOC_CHUNK has two indices: HNSW (768d COSINE) for vector search and BM25 (text_en analyser) for keyword search.
 AGENT_LOG is standalone — populated by fuse_events with start_fuse / end_fuse records; log failures never abort business logic.
+
+
+8. Dashboard interaction model (evening update)
+```mermaid
+flowchart LR
+  U[Analyst / Operator] --> C[Control Panel]
+  C --> P[Preset Manager\nsave / load / delete]
+  C --> R[Role View Toggle\nAnalyst / Operator]
+  C --> Q[Replay Submit]
+
+  Q --> API[POST /api/replay]
+  API --> UI[Replay State Store]
+
+  UI --> MAP[Observation Map\nfeed + mode filters\ntime scrubber + play]
+  UI --> ANA[Analytics\nscorecard + alerts + diff]
+  UI --> EVT[Event Timeline\nexpandable provenance]
+  UI --> OBS[Diagnostics\nstatus + model + latency]
+```
+The dashboard now separates control intent (preset/role/query) from rendering state, so replay runs are reproducible and role-specific.
+
+
+9. Observation Map state machine
+```mermaid
+stateDiagram-v2
+  [*] --> Loaded
+  Loaded --> Filtered : select feed/mode
+  Filtered --> TimeScoped : move time scrubber
+  TimeScoped --> Playing : Play
+  Playing --> TimeScoped : Pause
+  TimeScoped --> Focused : click marker/list row
+  Focused --> Filtered : change feed/mode
+  Focused --> TimeScoped : scrub time
+```
+Marker visibility is computed by intersection of: feed filter, mode filter, and time cursor.
+
+
+10. Replay observability + export flow
+```mermaid
+sequenceDiagram
+  participant UI as Frontend
+  participant API as /api/replay
+  participant ZIP as Export Pack
+
+  UI->>API: POST replay request
+  API-->>UI: events + narrative + summary + runtime_metrics + llm_model_used + thread_id + trace_url
+  UI->>UI: Render diagnostics (status/model/latency)
+  UI->>UI: Build scorecard + diff + alerts + data-quality checks
+  UI->>ZIP: Export PNG cards + replay JSON + markdown brief
+  ZIP-->>UI: Download bundle
+```
+This flow makes execution reliability visible and exportable for judging/demo evidence.
