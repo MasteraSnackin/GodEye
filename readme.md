@@ -19,7 +19,7 @@ Unlike shallow RAG systems that retrieve documents and hope for the best, GodEye
 
 Built for AI engineers, data engineers, and OSINT-curious developers who want a concrete, production-shaped pattern for agent workflows over graph + vector data.
 
-This project would not be feasible in its current form without both LangChain/LangGraph and SurrealDB. LangChain/LangGraph provides the orchestration layer for deterministic multi-step agent execution (tooling, parallel phases, retries/fallbacks, and persistent checkpoint flow), while SurrealDB provides the unified persistent substrate where graph relationships, time-windowed events, vector/BM25 retrieval data, and replay state all coexist and evolve together. If either side is removed, the system loses a core property: without LangGraph, reliable stateful orchestration and tool coordination break down; without SurrealDB, the structured, evolving world model that makes the agent reliable and auditable disappears.
+This project would not be feasible in its current form without both LangChain/LangGraph and SurrealDB. LangChain/LangGraph provides the orchestration layer for deterministic multi-step agent execution (tooling, parallel phases, retries/fallbacks, and persistent checkpoint flow), while SurrealDB provides the unified persistent substrate where graph relationships, time-windowed events, vector/BM25 retrieval data, and replay state all coexist and evolve together.
 
 ---
 
@@ -60,7 +60,7 @@ This project would not be feasible in its current form without both LangChain/La
 
 ## Scoring Notes
 
-- **Structured Memory / Knowledge Usage (30%)**
+- **Structured Memory / Knowledge Usage**
   - SurrealDB is the system of record for graph, vector, and replay state (entities, observations, events, doc chunks, agent logs, annotations, checkpoints).
   - Context evolves during execution through `fuse_events` writes, graph-linked annotations (`flag_suspicious_event`), and replay-phase reads (`get_timeline`, `get_event_annotations`).
   - Files: `src/agents/tools.py`, `schema.surql`.
@@ -152,7 +152,6 @@ flowchart LR
 ## Evening Update (March 8, 2026)
 
 Implemented in the latest evening update:
-
 - Observation Map upgrades: feed filters, mode filters (`All`, `Only Anomalies`, `High-Severity Linked`), timeline scrubber, play/pause demo mode, marker detail panel, interactive observation list.
 - Replay analytics upgrades: cross-window diff (`new`, `escalated`, `resolved`), alert rules summary, data-quality checks, latency budget panel, structured-vs-baseline scorecard.
 - Workflow usability upgrades: role view toggle (`Analyst`/`Operator`) and replay presets (save/load/delete).
@@ -540,13 +539,7 @@ Reference package:
 - [github.com/MasteraSnackin/langchain-surrealdb](https://github.com/MasteraSnackin/langchain-surrealdb) — standalone package
 
 - Public repository with commits/issues/PR activity tied to SurrealDB + LangChain integration.
-- Clear README/API docs in the package repo.
-- Versioned releases or tags for reproducibility.
 - Explicit usage or design influence in GodEye (integration notes, architecture link, or dependency path).
-- Submission note listing:
-  - package repo URL,
-  - specific commits or PRs,
-  - what functionality was contributed,
   - how it improved reliability/usability for agent workflows.
 ---
 
