@@ -1,6 +1,8 @@
 import hashlib
 import logging
 import os
+import json
+from pathlib import Path
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional
@@ -39,11 +41,94 @@ def _coerce_query_rows(result: object) -> list[dict]:
     return []
 
 
+def _safe_confidence(value: object) -> float:
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, min(1.0, confidence))
+
+
+def _build_fallback_timeline_metrics(events: list[dict], prev_events: list[dict], from_time: str, to_time: str) -> dict:
+    axis_counts: dict[str, int] = {}
+    severity_counts: dict[str, int] = {}
+    confidences = []
+    bucket_counts: dict[str, int] = {}
+
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        axis = str(event.get("axis", "unknown")).lower()
+        severity = str(event.get("severity", "unknown")).lower()
+        axis_counts[axis] = axis_counts.get(axis, 0) + 1
+        severity_counts[severity] = severity_counts.get(severity, 0) + 1
+
+        conf = _safe_confidence(event.get("confidence"))
+        if conf is not None:
+            confidences.append(conf)
+
+        raw = str(event.get("start_time") or "").replace("Z", "+00:00")
+        try:
+            bucket_dt = datetime.fromisoformat(raw)
+        except ValueError:
+            continue
+        bucket = bucket_dt.replace(minute=(bucket_dt.minute // 10) * 10, second=0, microsecond=0)
+        bucket_key = bucket.isoformat()
+        bucket_counts[bucket_key] = bucket_counts.get(bucket_key, 0) + 1
+
+    conf_avg = sum(confidences) / len(confidences) if confidences else 0.0
+    conf_min = min(confidences) if confidences else 0.0
+    conf_max = max(confidences) if confidences else 0.0
+
+    timeline_buckets = [
+        {"bucket": bucket, "count": count}
+        for bucket, count in sorted(bucket_counts.items(), key=lambda item: str(item[0]))
+    ]
+
+    return {
+        "window": {"from": from_time, "to": to_time},
+        "event_count": len(events),
+        "prev_event_count": len(prev_events),
+        "axis_distribution": axis_counts,
+        "severity_distribution": severity_counts,
+        "confidence": {
+            "count": len(confidences),
+            "avg": round(conf_avg, 3),
+            "min": round(conf_min, 3),
+            "max": round(conf_max, 3),
+        },
+        "timeline_buckets": timeline_buckets,
+        "retrieval_counts": {
+            "query_rag": 0,
+            "entity_graph_rag": 0,
+            "baseline_docs": 0,
+        },
+    }
+
+
 ALLOW_ORIGINS = _parse_csv_env(
     "CORS_ORIGINS",
-    "http://localhost:8001, http://127.0.0.1:8001, http://localhost:8080, http://127.0.0.1:8080",
+    "http://localhost:8001, http://127.0.0.1:8001, http://localhost:8080, http://127.0.0.1:8080, http://localhost:8086, http://127.0.0.1:8086, http://localhost:3000, http://127.0.0.1:3000",
 )
 API_KEYS = set(_parse_csv_env("GODEYE_API_KEYS", os.getenv("API_KEYS", "")))
+_FALLBACK_OBSERVATION_MAP = None
+
+
+def _build_observation_position_fallback() -> dict[str, dict]:
+    base_path = Path(__file__).resolve().parents[2] / "synthetic_world.json"
+    if not base_path.exists():
+        return {}
+    try:
+        payload = json.loads(base_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    mapping: dict[str, dict] = {}
+    for obs in payload.get("observations", []) or []:
+        obs_id = obs.get("id")
+        if not obs_id:
+            continue
+        mapping[obs_id] = {k: obs.get(k) for k in ("position", "entity_id", "entity_name", "entity_type", "raw")}
+    return mapping
 
 
 def validate_runtime_config():
@@ -76,11 +161,14 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="GodEye API", version="2.0", lifespan=lifespan)
+resolved_origins = sorted({*ALLOW_ORIGINS, "null"})
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOW_ORIGINS,
-    allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type", "X-API-Key"],
+    allow_origins=resolved_origins,
+    # Local dev and evaluation frequently run API at multiple localhost ports.
+    allow_origin_regex=r"^https?://(localhost|127\\.0\\.0\\.1)(:[0-9]{1,5})?$",
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 try:
@@ -264,7 +352,45 @@ async def api_observations(
             f"SELECT * FROM observation {where} ORDER BY time LIMIT $limit;",
             params,
         )
-        return {"observations": _coerce_query_rows(res)}
+        observations = _coerce_query_rows(res)
+        global _FALLBACK_OBSERVATION_MAP
+        if _FALLBACK_OBSERVATION_MAP is None:
+            _FALLBACK_OBSERVATION_MAP = _build_observation_position_fallback()
+        if _FALLBACK_OBSERVATION_MAP:
+            for obs in observations:
+                if not isinstance(obs, dict):
+                    continue
+                pos = obs.get("position")
+                if pos not in (None, "", {}):
+                    continue
+
+                raw_id = obs.get("id")
+                obs_id = None
+                if isinstance(raw_id, dict):
+                    obs_id = raw_id.get("id") or raw_id.get("record_id")
+                elif isinstance(raw_id, str):
+                    obs_id = raw_id.split(":")[-1]
+                else:
+                    raw_id_text = str(raw_id)
+                    if ":" in raw_id_text:
+                        obs_id = raw_id_text.rsplit(":", 1)[-1]
+                    elif raw_id_text.strip():
+                        obs_id = raw_id_text.strip()
+
+                if obs_id and obs_id in _FALLBACK_OBSERVATION_MAP:
+                    source = _FALLBACK_OBSERVATION_MAP[obs_id]
+                    if source.get("position"):
+                        obs["position"] = source.get("position")
+                    if source.get("entity_name"):
+                        obs.setdefault("entity_name", source.get("entity_name"))
+                    if source.get("entity_id"):
+                        obs.setdefault("entity_id", source.get("entity_id"))
+                    if not obs.get("entity_type") and source.get("entity_type"):
+                        obs.setdefault("entity_type", source.get("entity_type"))
+                    if not obs.get("raw") and source.get("raw"):
+                        obs.setdefault("raw", source.get("raw"))
+
+        return {"observations": observations}
     except Exception as e:
         logger.exception("api_observations failed: %s", e)
         raise HTTPException(status_code=500, detail="Observations query failed. Check server logs.")
@@ -314,8 +440,40 @@ async def api_replay(req: ReplayRequest, _auth: Optional[str] = Depends(require_
     except Exception as e:
         logger.exception("Graph invocation failed: %s", e)
         raise HTTPException(status_code=500, detail="Replay failed. Check server logs.")
+
+    events = result.get("events") or []
+    if not isinstance(events, list):
+        events = []
+    prev_events = result.get("prev_events") or []
+    if not isinstance(prev_events, list):
+        prev_events = []
+    narrative = result.get("narrative")
+    summary = result.get("event_summary")
+    timeline_metrics = result.get("timeline_metrics")
+    if not isinstance(timeline_metrics, dict):
+        timeline_metrics = _build_fallback_timeline_metrics(events, prev_events, req.from_time, req.to_time)
+    if not isinstance(narrative, str) or not narrative.strip():
+        narrative = (
+            "Narrative unavailable. Fallback data path generated no narrative. "
+            "Check LLM configuration, DB connectivity, and logs."
+        )
+        if "narrative_status" not in result:
+            result["narrative_status"] = "missing_data"
+    if not isinstance(summary, str) or not summary.strip():
+        summary = "Summary unavailable. Check source data and logs."
+
     return {
-        "narrative": result.get("narrative"),
-        "events": result.get("events", []),
-        "event_summary": result.get("event_summary"),
+        "narrative": narrative,
+        "events": events,
+        "event_summary": summary,
+        "narrative_status": result.get("narrative_status", "ok"),
+        "summary_status": result.get("summary_status", "ok"),
+        "narrative_status_reason": result.get("narrative_status_reason"),
+        "summary_status_reason": result.get("summary_status_reason"),
+        "timeline_metrics": timeline_metrics,
+        "baseline_events": prev_events,
+        "runtime_metrics": result.get("runtime_metrics", {}),
+        "llm_model_used": result.get("llm_model_used"),
+        "trace_url": os.getenv("LANGSMITH_RUN_BASE_URL", ""),
+        "thread_id": thread_id,
     }

@@ -26,6 +26,7 @@ Built for AI engineers, data engineers, and OSINT-curious developers who want a 
 - [Features](#features)
 - [Tech Stack](#tech-stack)
 - [Architecture Overview](#architecture-overview)
+- [Evening Update (March 8, 2026)](#evening-update-march-8-2026)
 - [Installation](#installation)
 - [Usage](#usage)
 - [Configuration](#configuration)
@@ -33,6 +34,7 @@ Built for AI engineers, data engineers, and OSINT-curious developers who want a 
 - [API Reference](#api-reference)
 - [Tests](#tests)
 - [Roadmap](#roadmap)
+- [Bonus Incentive: Open-Source Contribution](#bonus-incentive-open-source-contribution)
 - [Contributing](#contributing)
 - [License](#license)
 - [Contact / Support](#contact--support)
@@ -54,31 +56,29 @@ Built for AI engineers, data engineers, and OSINT-curious developers who want a 
 - **Persistent agent memory** — Checkpoints are persisted to SurrealDB (`agent_checkpoint`) via a custom `SurrealDBCheckpointSaver` so replay sessions can resume across process restarts.
 - **FastAPI backend + glassmorphism frontend** — Dark-mode bento-card UI with markdown-rendered narratives, severity-badged expandable event table, confidence sparkbars, and copy-to-clipboard.
 
-## Judge-Ready Scoring Notes
-
-This project is built to map directly to the scoring rubric:
+## Scoring Notes
 
 - **Structured Memory / Knowledge Usage (30%)**
   - SurrealDB is the system of record for graph, vector, and replay state (entities, observations, events, doc chunks, agent logs, annotations, checkpoints).
   - Context evolves during execution through `fuse_events` writes, graph-linked annotations (`flag_suspicious_event`), and replay-phase reads (`get_timeline`, `get_event_annotations`).
   - Files: `src/agents/tools.py`, `schema.surql`.
 
-- **Agent Workflow Quality (20%)**
+- **Agent Workflow Quality**
   - LangGraph orchestrates a two-node, multi-phase replay pipeline with parallel tool/LMM calls and explicit state transitions.
   - Tool coordination is handled through LangChain tool wrappers (`@tool`) and LLM invocations via the graph nodes.
   - File: `src/agents/graph.py`, `src/agents/tools.py`.
 
-- **Persistent Agent State (20%)**
+- **Persistent Agent State**
   - Custom `SurrealDBCheckpointSaver` implements LangGraph checkpoint persistence in SurrealDB with retention controls.
   - Replay sessions use deterministic `thread_id` and expose `/api/checkpoints` for auditability.
   - Files: `src/agents/checkpointer.py`, `api/replay/api.py`.
 
-- **Practical Use Case (20%)**
+- **Practical Use Case**
   - Real-time-style OSINT replay use case: time-window event fusion, cross-feed correlation, prior-window comparison, and structured incident narratives.
   - Includes baseline-vs-graph comparison to show value-added reasoning.
   - Files: `src/agents/graph.py`, `api/replay/api.py`, `readme.md` usage examples.
 
-- **Observability (10%)**
+- **Observability**
   - Structured action logs (`agent_log`) and execution traces in graph nodes (phase timing + failures) persisted/visible for debugging.
   - Optional LangSmith tracing config is included for full trace-level visibility.
   - Files: `src/agents/tools.py`, `src/agents/graph.py`, `.env.example`, `src/agents/checkpointer.py`.
@@ -141,6 +141,22 @@ flowchart LR
 ```
 
 `reconstruct_node` runs in three phases: (1) event fusion and query-RAG concurrently, (2) current and previous-window timeline reads concurrently, (3) entity-augmented Graph-RAG using entity names extracted from the detected events. `narrate_node` receives all three retrieval contexts and generates the narrative and event summary via two concurrent LLM calls. SurrealDB serves as the single source of truth for all graph, vector, and time-series data.
+
+### Supporting design docs
+
+- Full architecture write-up: [Architecture Overview.md](Architecture%20Overview.md)
+- Diagram source/reference: [diagrams.md](diagrams.md)
+
+## Evening Update (March 8, 2026)
+
+Implemented in the latest evening update:
+
+- Observation Map upgrades: feed filters, mode filters (`All`, `Only Anomalies`, `High-Severity Linked`), timeline scrubber, play/pause demo mode, marker detail panel, interactive observation list.
+- Replay analytics upgrades: cross-window diff (`new`, `escalated`, `resolved`), alert rules summary, data-quality checks, latency budget panel, structured-vs-baseline scorecard.
+- Workflow usability upgrades: role view toggle (`Analyst`/`Operator`) and replay presets (save/load/delete).
+- Provenance upgrades: event-row expansion now includes provenance summary (`source_tags`, confidence, linked entities).
+- Export upgrades: visual pack now includes JSON + PNGs + markdown report (`godeye-replay-brief.md`).
+- Backend replay response upgrades: `runtime_metrics`, `llm_model_used`, `thread_id`, `trace_url`.
 
 ---
 
@@ -278,6 +294,8 @@ Click **Run Replay** (or press `Ctrl+Enter`). The UI renders:
 | `SURREAL_PASSWORD` | No | `root` | SurrealDB password |
 | `CORS_ORIGINS` | No | `http://localhost:8001,http://127.0.0.1:8001` | Comma-separated allowed origins for browser clients |
 | `GODEYE_API_KEYS` | No | (unset) | Comma-separated API keys for optional API authentication (`X-API-Key`). Leave unset to disable auth in local mode |
+| `GODEYE_LLM_MODEL` | No | `claude-3-5-sonnet-latest` | Primary LLM model id. If unavailable, fallback list is attempted. |
+| `GODEYE_LLM_MODELS` | No | `claude-3-5-sonnet-latest,claude-3-5-sonnet-20240620,claude-3-haiku-20240307` | Optional ordered fallback chain for narrative + summary generation |
 | `GODEYE_CHECKPOINT_LIMIT` | No | (unset) | Optional checkpoint retention policy per `thread_id` and namespace. `unset` = unlimited, `0` = keep none, positive integer keeps the most recent N checkpoints |
 
 ### Database
@@ -298,17 +316,30 @@ The HNSW index dimension (`768`) and model name (`sentence-transformers/all-mpne
 
 ## Screenshots / Demo
 
-> Replace the placeholders below with real screenshots once available.
+Screenshots below are from the current dashboard flow and replay outputs.
 
-**Architecture / terminal demo:**
+**Initial dashboard state**
 
-![Terminal demo placeholder](<ADD_SCREENSHOT_PATH_HERE>)
+![Initial dashboard](frontend_screenshot_initial.png)
 
-**Web UI replay:**
+**Replay result with narrative + analytics**
 
-![Web UI placeholder](<ADD_SCREENSHOT_PATH_HERE>)
+![Replay result](frontend_screenshot_result.png)
 
-**Live demo / deployment:** `<ADD_LIVE_DEMO_URL_HERE>`
+**Deployment view (post-run)**
+
+![Deployed frontend (post-run)](deploy_frontend_after2.png)
+
+**Additional interaction captures**
+
+![Replay attempt final](frontend_replay_attempt_final.png)
+![Frontend home](frontend_home.png)
+
+**Demo endpoint URLs (local)**
+
+- API health: `http://127.0.0.1:8001/health`
+- Replay API: `http://127.0.0.1:8001/api/replay`
+- Frontend: `http://127.0.0.1:8081/index.html?api=http://127.0.0.1:8001`
 
 ---
 
@@ -348,7 +379,20 @@ Run the full LangGraph replay pipeline for a time window.
       "entities": [{"id": "entity:ship1", "name": "SIRIUS STAR", "type": "ship"}]
     }
   ],
-  "event_summary": "**Correlation (multi/high, conf=0.67):** ADS-B + jamming co-occurrence at 02:10 UTC..."
+  "event_summary": "**Correlation (multi/high, conf=0.67):** ADS-B + jamming co-occurrence at 02:10 UTC...",
+  "narrative_status": "ok",
+  "summary_status": "ok",
+  "runtime_metrics": {
+    "phase1_ms": 421.4,
+    "phase2_ms": 41.9,
+    "phase3_ms": 138.1,
+    "total_reconstruct_ms": 602.0,
+    "narrate_ms": 1128.2,
+    "total_ms": 1730.2
+  },
+  "llm_model_used": "claude-3-5-sonnet-20240620",
+  "thread_id": "f2a9a3...",
+  "trace_url": "https://smith.langchain.com/o/.../r/..."
 }
 ```
 
@@ -485,6 +529,23 @@ The repository includes a GitHub Actions workflow at `.github/workflows/ci.yml` 
 - **Agent metrics dashboard** — per-request latency breakdown, event counts, confidence distributions, Graph-RAG uplift measurement.
 - **Local LLM option** — offline or cost-sensitive deployments via Ollama or llama.cpp.
 
+---
+
+## Bonus Incentive: Open-Source Contribution
+
+Reference package:
+
+- [github.com/MasteraSnackin/langchain-surrealdb](https://github.com/MasteraSnackin/langchain-surrealdb) — standalone package
+
+- Public repository with commits/issues/PR activity tied to SurrealDB + LangChain integration.
+- Clear README/API docs in the package repo.
+- Versioned releases or tags for reproducibility.
+- Explicit usage or design influence in GodEye (integration notes, architecture link, or dependency path).
+- Submission note listing:
+  - package repo URL,
+  - specific commits or PRs,
+  - what functionality was contributed,
+  - how it improved reliability/usability for agent workflows.
 ---
 
 ## Persistent Checkpointing

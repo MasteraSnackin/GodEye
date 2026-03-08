@@ -102,6 +102,9 @@ def test_api_replay_requires_key_and_invokes_graph(monkeypatch):
         body = with_auth.json()
         assert body["events"][0]["id"] == "event:test"
         assert body["narrative"] == "narrative"
+        assert "runtime_metrics" in body
+        assert "llm_model_used" in body
+        assert "thread_id" in body
         called_state = graph_mock.ainvoke.await_args.args[0]
         assert isinstance(called_state, dict)
         assert "thread_id" in called_state

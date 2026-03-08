@@ -1,6 +1,7 @@
 import asyncio
 from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime
+import os
 from typing import Any
 
 from langchain_core.runnables import RunnableConfig
@@ -13,6 +14,10 @@ from langgraph.checkpoint.base import (
 )
 
 from .tools import get_surreal_client
+
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def _coerce_query_rows(result: object) -> list[dict]:
@@ -34,8 +39,9 @@ class SurrealDBCheckpointSaver(BaseCheckpointSaver):
 
     def __init__(self, timeout_seconds: float = 20.0, max_checkpoints_per_thread: int | None = None):
         super().__init__()
-        self.timeout_seconds = timeout_seconds
+        self.timeout_seconds = float(os.getenv("GODEYE_CHECKPOINT_TIMEOUT_SECONDS", str(timeout_seconds)))
         self.max_checkpoints_per_thread = max_checkpoints_per_thread
+        self.strict_mode = os.getenv("GODEYE_CHECKPOINT_STRICT", "").strip().lower() in {"1", "true", "yes", "on"}
 
     @staticmethod
     def _run_sync(coro):
@@ -72,6 +78,9 @@ class SurrealDBCheckpointSaver(BaseCheckpointSaver):
         try:
             result = await asyncio.wait_for(db.query(query, params), timeout=self.timeout_seconds)
             return _coerce_query_rows(result)
+        except Exception as e:
+            logger.error("Checkpoint query failed: %s", e)
+            raise
         finally:
             await db.close()
 
@@ -193,20 +202,25 @@ class SurrealDBCheckpointSaver(BaseCheckpointSaver):
     ) -> RunnableConfig:
         thread_id, checkpoint_ns, parent_checkpoint_id = self._extract_id(config)
         checkpoint_id = checkpoint["id"]
-        await self._store_checkpoint(
-            {
-                "thread_id": thread_id,
-                "checkpoint_ns": checkpoint_ns,
-                "checkpoint_id": checkpoint_id,
-                "parent_checkpoint_id": parent_checkpoint_id,
-                "created_at": datetime.now(UTC).isoformat(),
-                "checkpoint": checkpoint,
-                "metadata": dict(metadata),
-                "versions": dict(new_versions),
-                "writes": [],
-            }
-        )
-        await self._enforce_retention(thread_id, checkpoint_ns)
+        try:
+            await self._store_checkpoint(
+                {
+                    "thread_id": thread_id,
+                    "checkpoint_ns": checkpoint_ns,
+                    "checkpoint_id": checkpoint_id,
+                    "parent_checkpoint_id": parent_checkpoint_id,
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "checkpoint": checkpoint,
+                    "metadata": dict(metadata),
+                    "versions": dict(new_versions),
+                    "writes": [],
+                }
+            )
+            await self._enforce_retention(thread_id, checkpoint_ns)
+        except Exception as e:
+            logger.warning("Checkpoint write failed; continuing without persistence: %s", e)
+            if self.strict_mode:
+                raise
         return self._checkpoint_config(thread_id, checkpoint_ns, checkpoint_id)
 
     def get_tuple(self, config: RunnableConfig) -> CheckpointTuple | None:
@@ -214,28 +228,34 @@ class SurrealDBCheckpointSaver(BaseCheckpointSaver):
 
     async def aget_tuple(self, config: RunnableConfig) -> CheckpointTuple | None:
         thread_id, checkpoint_ns, checkpoint_id = self._extract_id(config)
-        if checkpoint_id:
-            rows = await self._query(
-                """
-                SELECT * FROM agent_checkpoint
-                WHERE thread_id = $thread_id
-                  AND checkpoint_ns = $checkpoint_ns
-                  AND checkpoint_id = $checkpoint_id
-                LIMIT 1;
-                """,
-                {"thread_id": thread_id, "checkpoint_ns": checkpoint_ns, "checkpoint_id": checkpoint_id},
-            )
-        else:
-            rows = await self._query(
-                """
-                SELECT * FROM agent_checkpoint
-                WHERE thread_id = $thread_id
-                  AND checkpoint_ns = $checkpoint_ns
-                ORDER BY created_at DESC
-                LIMIT 1;
-                """,
-                {"thread_id": thread_id, "checkpoint_ns": checkpoint_ns},
-            )
+        try:
+            if checkpoint_id:
+                rows = await self._query(
+                    """
+                    SELECT * FROM agent_checkpoint
+                    WHERE thread_id = $thread_id
+                      AND checkpoint_ns = $checkpoint_ns
+                      AND checkpoint_id = $checkpoint_id
+                    LIMIT 1;
+                    """,
+                    {"thread_id": thread_id, "checkpoint_ns": checkpoint_ns, "checkpoint_id": checkpoint_id},
+                )
+            else:
+                rows = await self._query(
+                    """
+                    SELECT * FROM agent_checkpoint
+                    WHERE thread_id = $thread_id
+                      AND checkpoint_ns = $checkpoint_ns
+                    ORDER BY created_at DESC
+                    LIMIT 1;
+                    """,
+                    {"thread_id": thread_id, "checkpoint_ns": checkpoint_ns},
+                )
+        except Exception as e:
+            logger.warning("Checkpoint read failed; continuing without persisted state: %s", e)
+            if self.strict_mode:
+                raise
+            return None
 
         if not rows:
             return None
@@ -303,15 +323,22 @@ class SurrealDBCheckpointSaver(BaseCheckpointSaver):
             yield  # pragma: no cover
 
         thread_id, checkpoint_ns, _ = self._extract_id(config)
-        rows = await self._query(
-            """
-            SELECT * FROM agent_checkpoint
-            WHERE thread_id = $thread_id
-              AND checkpoint_ns = $checkpoint_ns
-            ORDER BY created_at DESC;
-            """,
-            {"thread_id": thread_id, "checkpoint_ns": checkpoint_ns},
-        )
+        try:
+            rows = await self._query(
+                """
+                SELECT * FROM agent_checkpoint
+                WHERE thread_id = $thread_id
+                  AND checkpoint_ns = $checkpoint_ns
+                ORDER BY created_at DESC;
+                """,
+                {"thread_id": thread_id, "checkpoint_ns": checkpoint_ns},
+            )
+        except Exception as e:
+            logger.warning("Checkpoint list failed; returning empty list: %s", e)
+            if self.strict_mode:
+                raise
+            return
+            yield  # pragma: no cover
 
         count = 0
         for row in rows:
@@ -340,26 +367,31 @@ class SurrealDBCheckpointSaver(BaseCheckpointSaver):
         self._run_sync(self.acopy_thread(source_thread_id, target_thread_id))
 
     async def acopy_thread(self, source_thread_id: str, target_thread_id: str) -> None:
-        rows = await self._query(
-            """
-            SELECT * FROM agent_checkpoint
-            WHERE thread_id = $thread_id
-            ORDER BY created_at ASC;
-            """,
-            {"thread_id": source_thread_id},
-        )
-        if not rows:
-            return
-        for row in rows:
-            source_id = row.get("checkpoint_id")
-            if not source_id:
-                continue
-            copied = dict(row)
-            copied["thread_id"] = target_thread_id
-            copied["checkpoint_id"] = f"{source_id}-copy-{target_thread_id}"
-            copied["created_at"] = datetime.now(UTC).isoformat()
-            copied.pop("id", None)
-            await self._store_checkpoint(copied)
+        try:
+            rows = await self._query(
+                """
+                SELECT * FROM agent_checkpoint
+                WHERE thread_id = $thread_id
+                ORDER BY created_at ASC;
+                """,
+                {"thread_id": source_thread_id},
+            )
+            if not rows:
+                return
+            for row in rows:
+                source_id = row.get("checkpoint_id")
+                if not source_id:
+                    continue
+                copied = dict(row)
+                copied["thread_id"] = target_thread_id
+                copied["checkpoint_id"] = f"{source_id}-copy-{target_thread_id}"
+                copied["created_at"] = datetime.now(UTC).isoformat()
+                copied.pop("id", None)
+                await self._store_checkpoint(copied)
+        except Exception as e:
+            logger.warning("checkpoint copy failed: %s", e)
+            if self.strict_mode:
+                raise
 
     def prune(self, thread_ids: Sequence[str], *, strategy: str = "keep_latest") -> None:
         self._run_sync(self.aprune(thread_ids, strategy=strategy))
@@ -367,30 +399,35 @@ class SurrealDBCheckpointSaver(BaseCheckpointSaver):
     async def aprune(self, thread_ids: Sequence[str], *, strategy: str = "keep_latest") -> None:
         if not thread_ids:
             return
-        for thread_id in thread_ids:
-            if strategy == "delete":
-                await self._query("DELETE agent_checkpoint WHERE thread_id = $thread_id;", {"thread_id": thread_id})
-                continue
-
-            rows = await self._query(
-                """
-                SELECT * FROM agent_checkpoint
-                WHERE thread_id = $thread_id
-                ORDER BY created_at DESC;
-                """,
-                {"thread_id": thread_id},
-            )
-            if len(rows) <= 1:
-                continue
-            for row in rows[1:]:
-                cid = row.get("checkpoint_id")
-                if not cid:
+        try:
+            for thread_id in thread_ids:
+                if strategy == "delete":
+                    await self._query("DELETE agent_checkpoint WHERE thread_id = $thread_id;", {"thread_id": thread_id})
                     continue
-                await self._query(
+
+                rows = await self._query(
                     """
-                    DELETE agent_checkpoint
+                    SELECT * FROM agent_checkpoint
                     WHERE thread_id = $thread_id
-                      AND checkpoint_id = $checkpoint_id;
+                    ORDER BY created_at DESC;
                     """,
-                    {"thread_id": thread_id, "checkpoint_id": cid},
+                    {"thread_id": thread_id},
                 )
+                if len(rows) <= 1:
+                    continue
+                for row in rows[1:]:
+                    cid = row.get("checkpoint_id")
+                    if not cid:
+                        continue
+                    await self._query(
+                        """
+                        DELETE agent_checkpoint
+                        WHERE thread_id = $thread_id
+                          AND checkpoint_id = $checkpoint_id;
+                        """,
+                        {"thread_id": thread_id, "checkpoint_id": cid},
+                    )
+        except Exception as e:
+            logger.warning("checkpoint prune failed: %s", e)
+            if self.strict_mode:
+                raise
