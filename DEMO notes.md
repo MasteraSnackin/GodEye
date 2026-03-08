@@ -208,3 +208,23 @@ When you re‑run a replay later, you are querying an evolving world model, not 
 
 If you have time for only one extra diagram for judges, use the “structured vs baseline” one you already have. If you have time for only one extra doc, use the DEMO.md script so you can present cleanly without thinking about the steps.
 
+---
+
+## Replay batch + prompt experiment (March 8, 2026)
+
+- Ran 10 replay cases from `evaluation/replay_eval_dataset.json`.
+- Compared prompt variants using `python evaluation/run_prompt_experiment.py`.
+- Outcome:
+  - `v1`: avg score `5.0265`, avg runtime `11686.14 ms`
+  - `v2`: avg score `5.8311`, avg runtime `4786.51 ms`
+  - Winner: `v2`
+- Kept config in `.env`:
+  - `GODEYE_PROMPT_VERSION=v2`
+  - `GODEYE_LLM_MODEL=claude-3-haiku-20240307`
+
+Best 3 run references (filter by thread_id in LangSmith):
+
+- https://smith.langchain.com — `thread_id=0367633a205a0a0711ca836ed01d4e3c`
+- https://smith.langchain.com — `thread_id=28c5c8dd6ea80c1f4f3ab32ea5b281e8`
+- https://smith.langchain.com — `thread_id=ef1be0453f093a8ec8dc85d6dd866c65`
+

@@ -1,0 +1,82 @@
+[
+  {
+    "id": "case_01",
+    "from_time": "2026-02-28T02:00:00Z",
+    "to_time": "2026-02-28T04:00:00Z",
+    "region": "Hormuz",
+    "scenario": "EPIC_FURY_DEMO",
+    "query": "What anomalies occurred in this window?"
+  },
+  {
+    "id": "case_02",
+    "from_time": "2026-02-28T02:00:00Z",
+    "to_time": "2026-02-28T03:00:00Z",
+    "region": "Hormuz",
+    "scenario": "EPIC_FURY_DEMO",
+    "query": "Summarize high-severity events first."
+  },
+  {
+    "id": "case_03",
+    "from_time": "2026-02-28T02:05:00Z",
+    "to_time": "2026-02-28T02:20:00Z",
+    "region": "Hormuz",
+    "scenario": "EPIC_FURY_DEMO",
+    "query": "Was there coordinated multi-domain activity?"
+  },
+  {
+    "id": "case_04",
+    "from_time": "2026-02-28T02:10:00Z",
+    "to_time": "2026-02-28T02:30:00Z",
+    "region": "Hormuz",
+    "scenario": "EPIC_FURY_DEMO",
+    "query": "Explain any jamming-linked events and confidence."
+  },
+  {
+    "id": "case_05",
+    "from_time": "2026-02-28T01:30:00Z",
+    "to_time": "2026-02-28T02:30:00Z",
+    "region": "Hormuz",
+    "scenario": "EPIC_FURY_DEMO",
+    "query": "What changed compared to the previous window?"
+  },
+  {
+    "id": "case_06",
+    "from_time": "2026-02-28T02:15:00Z",
+    "to_time": "2026-02-28T04:00:00Z",
+    "region": "Hormuz",
+    "scenario": "EPIC_FURY_DEMO",
+    "query": "Identify tentative low-confidence findings only."
+  },
+  {
+    "id": "case_07",
+    "from_time": "2026-02-28T02:00:00Z",
+    "to_time": "2026-02-28T02:15:00Z",
+    "region": "Hormuz",
+    "scenario": "EPIC_FURY_DEMO",
+    "query": "Give an executive summary for an operator."
+  },
+  {
+    "id": "case_08",
+    "from_time": "2026-02-28T02:20:00Z",
+    "to_time": "2026-02-28T04:00:00Z",
+    "region": "Hormuz",
+    "scenario": "EPIC_FURY_DEMO",
+    "query": "Any unresolved maritime anomalies?"
+  },
+  {
+    "id": "case_09",
+    "from_time": "2026-02-28T00:00:00Z",
+    "to_time": "2026-02-28T01:00:00Z",
+    "region": "Hormuz",
+    "scenario": "EPIC_FURY_DEMO",
+    "query": "What happened before the main incident window?"
+  },
+  {
+    "id": "case_10",
+    "from_time": "2026-02-28T02:00:00Z",
+    "to_time": "2026-02-28T04:00:00Z",
+    "region": "Hormuz",
+    "scenario": "EPIC_FURY_DEMO",
+    "query": "List evidence-backed recommendations for next actions."
+  }
+]

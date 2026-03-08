@@ -476,4 +476,5 @@ async def api_replay(req: ReplayRequest, _auth: Optional[str] = Depends(require_
         "llm_model_used": result.get("llm_model_used"),
         "trace_url": os.getenv("LANGSMITH_RUN_BASE_URL", ""),
         "thread_id": thread_id,
+        "prompt_version": os.getenv("GODEYE_PROMPT_VERSION", "v1"),
     }

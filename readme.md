@@ -1,6 +1,6 @@
 # GodEye
 
-**4D OSINT Replay Engine — time-resolved, multi-modal intelligence over a unified graph + vector world model.**
+**4D Open Source Intelligence (OSINT) Replay Engine — time-resolved, multi-modal intelligence over a unified graph + vector world model.**
 
 ![Build](https://img.shields.io/badge/build-passing-brightgreen)
 ![CI](https://img.shields.io/github/actions/workflow/status/MasteraSnackin/GodEye/ci.yml?branch=master&label=CI)
@@ -158,6 +158,24 @@ Implemented in the latest evening update:
 - Provenance upgrades: event-row expansion now includes provenance summary (`source_tags`, confidence, linked entities).
 - Export upgrades: visual pack now includes JSON + PNGs + markdown report (`godeye-replay-brief.md`).
 - Backend replay response upgrades: `runtime_metrics`, `llm_model_used`, `thread_id`, `trace_url`.
+
+### Prompt experiment + replay batch (10 runs)
+
+- Dataset used: `evaluation/replay_eval_dataset.json` (10 windows/questions).
+- Experiment runner: `python evaluation/run_prompt_experiment.py`
+- Results:
+  - `v1` avg score: **5.0265**, avg runtime: **11686.14 ms**
+  - `v2` avg score: **5.8311**, avg runtime: **4786.51 ms**
+  - **Winner:** `v2`
+- Config kept in `.env`:
+  - `GODEYE_PROMPT_VERSION=v2`
+  - `GODEYE_LLM_MODEL=claude-3-haiku-20240307`
+
+Best 3 traced runs from the 10-case batch (open LangSmith and filter by `thread_id`):
+
+- [LangSmith run reference 1](https://smith.langchain.com) — `thread_id=0367633a205a0a0711ca836ed01d4e3c`
+- [LangSmith run reference 2](https://smith.langchain.com) — `thread_id=28c5c8dd6ea80c1f4f3ab32ea5b281e8`
+- [LangSmith run reference 3](https://smith.langchain.com) — `thread_id=ef1be0453f093a8ec8dc85d6dd866c65`
 
 ---
 

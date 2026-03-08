@@ -50,6 +50,10 @@ def _llm_model_candidates() -> list[str]:
     return all_candidates or ["claude-3-5-sonnet-latest"]
 
 
+def _prompt_variant() -> str:
+    return os.getenv("GODEYE_PROMPT_VERSION", "v1").strip().lower()
+
+
 async def _invoke_llm(prompt: str) -> tuple[str, str]:
     last_error: Exception | None = None
     for model in _llm_model_candidates():
@@ -371,6 +375,7 @@ Graph-RAG path (entity-augmented retrieval — docs retrieved using names of det
         "1. Explain what happened in the current window. Lead with correlation events if present.\n"
         "   Weight your confidence in each claim by the event confidence score — flag anything below 0.4 as tentative."
     ]
+    variant = _prompt_variant()
     n = 2
     if prev_events:
         instructions.append(f"{n}. Compare to the previous window: what escalated, de-escalated, or is new.")
@@ -382,6 +387,9 @@ Graph-RAG path (entity-augmented retrieval — docs retrieved using names of det
         instructions.append(f"{n}. Integrate analyst/agent annotations where they alter confidence or escalation narrative.")
         n += 1
     instructions.append(f"{n}. Note what you could not have concluded using only the baseline RAG path.")
+    if variant == "v2":
+        instructions.append(f"{n+1}. Format as: Executive Summary, Key Evidence (bullet list), Risks/Unknowns, Recommended Next Actions.")
+        instructions.append(f"{n+2}. Keep claims tightly grounded in events/docs and avoid speculation.")
     instruction_block = "\n".join(instructions)
 
     prompt = f"""
